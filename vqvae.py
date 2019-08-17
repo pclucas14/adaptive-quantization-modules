@@ -153,14 +153,14 @@ class DiffQuantize(Quantize):
         # Get weights to nearest neigh: Softmax with temp
         soft = F.softmax(-distances/temp, dim=1)
 
-        print(temp, soft.max(dim=1)[0].mean())
+        #print(temp, soft.max(dim=1)[0].mean())
         # New Embedding: Softmax over neighbours
         soft_quantize = soft @ self.embed.t()
         soft_quantize = soft_quantize.view(x.shape)
 
         # hard : 
         quantize = self.embed_code(embed_ind)
-        #quantize = soft_quantize #+ (quantize - soft_quantize).detach()
+        quantize = soft_quantize #+ (quantize - soft_quantize).detach()
 
         if self.embed_grad_update and False:
             diff = 0

@@ -86,7 +86,7 @@ def train_epoch(args, loss_func, pbar, train_loader, model, optimizer,
     # Loop data in epoch
     for _ in range(10):
         for jj, (x, _) in enumerate(train_loader):
-            for ii in range(10):
+            for ii in range(50):
                 # This break used for debugging
                 if args.max_iterations is not None:
                     if args.global_it > args.max_iterations:
@@ -110,15 +110,17 @@ def train_epoch(args, loss_func, pbar, train_loader, model, optimizer,
                 train_perplexity.append(perplexity.item())
 
                 # Print Average every 100 steps
-                if (args.global_it+1) % 100 == 0 and ii == 0:
-                    x_prime = model(EVAL_BATCH[0])[0]
-                    if (args.global_it+1) % 500 == 0 and ii == 0:
+                if (args.global_it+1) % 10 == 0 and ii == 0:
+                    with torch.no_grad():
+                        x_prime = model(EVAL_BATCH[0])[0]
+                    if (args.global_it+1) % 10 == 0 and ii == 0:
                         from PIL import Image
                         from torchvision.utils import save_image
                         rescale_inv = lambda x : x * 0.5 + 0.5
-                        save_image(rescale_inv(torch.stack((x_prime[:32], EVAL_BATCH[0][:32]), 1).view(-1, 3, 32, 32)), 'tmp.png')
+                        save_image(rescale_inv(torch.stack((x_prime[:32], EVAL_BATCH[0][:32]), 1).view(-1, *args.input_size)), 'tmp.png')
                         Image.open('tmp.png').show()
-                    print('used : ', model.quantize[0].count.unique().shape, 'MSE : ', F.mse_loss(x_prime, EVAL_BATCH[0]).item())
+                    with torch.no_grad():
+                        print('used : ', model.quantize[0].count.unique().shape, 'MSE : ', F.mse_loss(x_prime, EVAL_BATCH[0]).item())
 
                     av_bpd = np.mean(train_bpd[-100:])
                     av_rec_err = np.mean(train_recon_error[-100:])
@@ -151,7 +153,7 @@ def main(args):
     #tr_loader, valid_loader, data_var, input_size = \
     #                            data.get_data(args.data_folder,args.batch_size)
 
-    data__ = locate('data_.get_split_cifar10')(args)
+    data__ = locate('data_.get_miniimagenet')(args)
     tr_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data__, [True, False, False])]
 
     EVAL_BATCH = [y for y in [x for x in valid_loader][0]][0]
@@ -170,8 +172,8 @@ def main(args):
             model = VQVAE(args).to(device)
         print(f'The model has {utils.count_parameters(model):,} trainable parameters')
 
-        optimizer = optim.Adam(model.parameters(),lr=args.learning_rate,
-                                                                    amsgrad=False)
+        optimizer = optim.Adamax(model.parameters(),lr=args.learning_rate)#,
+                                                                    #amsgrad=False)
 
         print(f"Start training for {args.num_epochs} epochs")
         num_batches = math.ceil(len(train_loader.dataset)/train_loader.batch_size)

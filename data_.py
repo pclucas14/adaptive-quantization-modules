@@ -44,7 +44,7 @@ class XYDataset(torch.utils.data.Dataset):
 """ Template Dataset for Continual Learning """
 class CLDataLoader(object):
     def __init__(self, datasets_per_task, args, train=True):
-        bs = args.batch_size if train else 1024
+        bs = args.batch_size if train else 256
 
         self.datasets = datasets_per_task
         self.loaders = [
@@ -318,7 +318,7 @@ def get_miniimagenet(args):
     ROOT_PATH = '/mnt/data/lpagec/imagenet/imagenet_images'
     ROOT_PATH_CSV = '../prototypical-network-pytorch/materials'
     
-    size = 84
+    size = 128
     args.n_tasks   = 20
     args.n_classes = 100
     args.multiple_heads = True
