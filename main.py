@@ -110,10 +110,10 @@ def train_epoch(args, loss_func, pbar, train_loader, model, optimizer,
                 train_perplexity.append(perplexity.item())
 
                 # Print Average every 100 steps
-                if (args.global_it+1) % 10 == 0 and ii == 0:
+                if (args.global_it+1) % 100 == 0 and ii == 0:
                     with torch.no_grad():
                         x_prime = model(EVAL_BATCH[0])[0]
-                    if (args.global_it+1) % 10 == 0 and ii == 0:
+                    if (args.global_it+1) % 100 == 0 and ii == 0:
                         from PIL import Image
                         from torchvision.utils import save_image
                         rescale_inv = lambda x : x * 0.5 + 0.5
@@ -153,7 +153,7 @@ def main(args):
     #tr_loader, valid_loader, data_var, input_size = \
     #                            data.get_data(args.data_folder,args.batch_size)
 
-    data__ = locate('data_.get_miniimagenet')(args)
+    data__ = locate('data_.get_%s' % args.dataset)(args)
     tr_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data__, [True, False, False])]
 
     EVAL_BATCH = [y for y in [x for x in valid_loader][0]][0]
@@ -220,7 +220,7 @@ if __name__ == '__main__':
     # Data and training settings
     add('--data_folder', type=str, default="../cl-pytorch/data",
             help='Location of data (will download data if does not exist)')
-    add('--dataset', type=str,
+    add('--dataset', type=str, default='split_cifar10',
             help='Dataset name')
     add('--batch_size', type=int, default=10)
     add('--max_iterations', type=int, default=None,
