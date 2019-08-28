@@ -10,7 +10,7 @@ from copy   import deepcopy
 from pydoc  import locate
 
 from utils   import *
-from data_   import *
+from data    import *
 from args    import get_args
 from modular import QStack
 
@@ -82,7 +82,7 @@ for run in range(1): #args.n_runs):
     set_seed(521)
 
     # fetch data
-    data = locate('data_.get_%s' % args.dataset)(args)
+    data = locate('data.get_%s' % args.dataset)(args)
 
     # make dataloaders
     train_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True, False, False])]
