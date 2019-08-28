@@ -2,8 +2,8 @@
 Stacking Quantization blocks for efficient lifelong online compression
 
 ## arguments usage
- - specific block parameters are separated by three dashes
- -  pecific block parameters are specified AFTER regular args
+ - specific block parameters are separated by `---layer_i` flag
+ - specific block parameters are specified AFTER regular args
  e.g. 
  
 ```
