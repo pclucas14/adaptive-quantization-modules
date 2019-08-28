@@ -10,6 +10,7 @@ https://github.com/rosinality/vq-vae-2-pytorch
 In turn based on
 https://github.com/deepmind/sonnet and ported it to PyTorch
 """
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -31,6 +32,7 @@ def sq_l2(x, embedding):
     _, embed_ind = (-dist).max(1)
     return embed_ind, dist
 
+
 class Quantize(nn.Module):
     def __init__(self, dim, num_embeddings, decay=0.99, eps=1e-5, size=1):
         super().__init__()
@@ -48,6 +50,7 @@ class Quantize(nn.Module):
         self.register_buffer('count', torch.zeros(num_embeddings).long())
 
     def forward(self, x):
+        x = x.permute(0, 2, 3, 1)
 
         # funky stuff in
         bs, hH, _, C = x.size()
@@ -76,7 +79,7 @@ class Quantize(nn.Module):
 
         # calculate perplexity
         avg_probs  = F.one_hot(embed_ind, self.num_embeddings).view(-1, self.num_embeddings)
-        avg_probs  = avg_probs.float().mean()
+        avg_probs  = avg_probs.float().mean(dim=0)
         perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
 
         if self.training:
@@ -103,10 +106,125 @@ class Quantize(nn.Module):
         # funky stuff out
         quantize = quantize.transpose(3,2).reshape(bs, hH, hH, C)
 
+        quantize = quantize.permute(0, 3, 1, 2)
+
         return quantize, diff, embed_ind, perplexity
 
     def embed_code(self, embed_id):
         return F.embedding(embed_id, self.embed.permute(3, 0, 1, 2))
+
+
+class GumbelQuantize(nn.Module):
+    #def __init__(self, n_classes, decay_rate=0.9, decay_schedule=100, diff_temp=4.):
+    def __init__(self, n_classes, decay_rate=0.9, decay_schedule=1000, diff_temp=4.):
+        super().__init__()
+
+        self.temp = diff_temp
+        self.n_classes = n_classes
+        self.min_temp  = 0.01
+        self.decay_rate = decay_rate
+        self.decay_schedule = decay_schedule
+        self.batch_count = 0
+
+    def temp_update(self):
+        self.batch_count += 1
+        if self.batch_count % self.decay_schedule == 0:
+            self.temp=max(self.temp*self.decay_rate, self.min_temp)
+
+    def sample_gumbel(self, shape, eps=1e-20):
+        U = torch.rand(shape)
+        return -torch.log(-torch.log(U + eps) + eps)
+
+
+    def gumbel_softmax_sample(self, logits, temperature):
+        y = logits + self.sample_gumbel(logits.size()).to(logits.device)
+        return F.softmax(y / temperature, dim=-1)
+
+
+    def gumbel_softmax(self, logits, temperature, hard=False):
+        """
+        ST-gumple-softmax
+        input: [*, n_class]
+        return: flatten --> [*, n_class] an one-hot vector
+        """
+        y = self.gumbel_softmax_sample(logits, temperature)
+
+        if not hard:
+            #return y.view(-1, latent_dim * categorical_dim)
+            return y.view(y.size(0), -1)
+
+        shape = y.size()
+        _, ind = y.max(dim=-1)
+        y_hard = torch.zeros_like(y).view(-1, shape[-1])
+        y_hard.scatter_(1, ind.view(-1, 1), 1)
+        y_hard = y_hard.view(*shape)
+        # Set gradients w.r.t. y_hard gradients w.r.t. y
+        y_hard = (y_hard - y).detach() + y
+        # return y_hard.view(-1, latent_dim * categorical_dim)
+        return y_hard.view(y_hard.size(0), -1)
+
+
+    def forward(self, x):
+        """ We should probably to something similar as VQ
+            i.e. use the last dimension as probs, and keep 2D structure """
+
+        self.temp_update()
+        temp = self.temp
+
+        x   = x.permute(0, 2, 3, 1) # (bs, C, H, W) --> (bs, H, W, C)
+        shp = x.shape
+        x   = x.view(x.size(0), x.size(1) * x.size(2), x.size(3))
+
+        z_q = self.gumbel_softmax(x, temp, hard=True)
+        z_q = z_q.view(shp)
+        z_q = z_q.permute(0, 3, 1, 2)
+
+        embed_ind = z_q.max(dim=1)[1]
+
+        # calculate perplexity
+        avg_probs  = F.one_hot(embed_ind, self.n_classes).view(-1, self.n_classes)
+        avg_probs  = avg_probs.float().mean(dim=0)
+        perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
+
+        return z_q, 0., embed_ind, perplexity
+
+
+class AQuantize(nn.Module):
+    """ Argmax autoencoder quantization step """
+    def __init__(self, dim, decay=0.99, eps=1e-10):
+        super().__init__()
+        self.dim = self.num_embeddings = dim
+        self.eps = eps
+
+
+    def forward(self, x):
+        # x is a (bs, C, H, W) tensor
+
+        # we use the ReLU with divisive normalization
+        x = F.relu(x)
+        x = x / (x.sum(dim=1, keepdim=True) + self.eps)
+
+        embed_ind = x.max(dim=1)[1]
+        one_hot   = F.one_hot(embed_ind, num_classes=self.dim)
+        one_hot   = one_hot.permute(0, 3, 1, 2) # (bs, H, W, C) --> (bs, C, H, W)
+        one_hot   = one_hot.float()
+
+        quantize  = x + (one_hot - x).detach()
+
+        diff = (quantize.detach() - x).pow(2).mean()
+        # The +- `x` is the "straight-through" gradient trick!
+        quantize = x + (quantize - x).detach()
+
+        # calculate perplexity
+        avg_probs  = one_hot.mean(dim=(0, 2, 3))
+        perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
+
+        # calculate diversity penalty
+        q_bar = x.mean(dim=(0, 2, 3))
+        diversity = (q_bar * self.dim - 1.).pow(2).mean()
+
+        return quantize, diversity, embed_ind, perplexity
+
 
 
 class ResBlock(nn.Module):

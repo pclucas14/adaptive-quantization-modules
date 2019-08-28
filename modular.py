@@ -14,7 +14,7 @@ class QLayer(nn.Module):
 
         self.id      = id
         self.args    = args
-        self.log     = utils.DefaultOrderedDict()
+        self.log     = utils.RALog()
 
         # build networks
         self.encoder = Encoder(args)
@@ -37,8 +37,9 @@ class QLayer(nn.Module):
 
         self.quantize = nn.ModuleList(qt)
 
-        # build layer opt
-        self.opt = torch.optim.Adam(self.parameters(), lr=args.learning_rate)
+        if args.optimization == 'blockwise':
+            # build layer opt
+            self.opt = torch.optim.Adam(self.parameters(), lr=args.learning_rate)
 
         # loss specific parameters
         self.register_parameter('dec_log_stdv', \
@@ -72,6 +73,11 @@ class QLayer(nn.Module):
         self.diffs   = diffs
         self.argmins = argmins
 
+        # store as scalars for conveniance
+        for i in range(len(self.diffs)):
+            self.log.log('%d-ppl_%d'  % (self.id, i), self.ppls[i])
+            self.log.log('%d-diff_%d' % (self.id, i), self.diffs[i])
+
         return z_q
 
 
@@ -98,6 +104,7 @@ class QLayer(nn.Module):
         recon = F.mse_loss(self.output, target)
 
         self.recon = recon.item()
+        self.log.log('%d-recon' % self.id, self.recon)
 
         return recon, diffs
 
@@ -110,6 +117,7 @@ class QStack(nn.Module):
         super().__init__()
 
         self.args = args
+        self.log_step = 0
 
         """ assumes args is a nested dictionary, one for every block """
         blocks = []
@@ -117,6 +125,10 @@ class QStack(nn.Module):
             blocks += [QLayer(layer_no, args.layers[layer_no])]
 
         self.blocks = nn.ModuleList(blocks)
+
+        if self.args.optimization == 'global':
+            self.opt = torch.optim.Adam(self.parameters(), \
+                    lr=args.global_learning_rate)
 
 
     # madd design pattern use. Vybihal and Shashi would be proud
@@ -165,7 +177,7 @@ class QStack(nn.Module):
     def optimize(self, target, **kwargs):
         """ Loss calculation """
 
-        loss = 0.
+        total_loss = 0.
         for i, block in enumerate(self.blocks):
             # for now, let's fix the target of the subblocks to be `z_e` and not `z_q`
             target_i = target if i == 0 else self.blocks[i-1].z_q# z_e
@@ -173,17 +185,26 @@ class QStack(nn.Module):
             # it's important to detach the target! (similar to RL / Q-learning)
             recon, diff = block.loss(target_i.detach())
 
+            # TODO: figure out a way to train only on final recon
+            # TODO: put this back
+            # loss = (0. if i > 0 else 1.) * recon + block.args.commitment_cost * diff
             loss = recon + block.args.commitment_cost * diff
-            #loss += recon + block.args.commitment_cost * diff
 
-            # optimize
-            block.opt.zero_grad()
+            if self.args.optimization == 'global':
+                total_loss += loss
+            else:
+                # optimize
+                block.opt.zero_grad()
 
-            # TODO: retain graph if inter_level_gradient is on
-            loss.backward(retain_graph=(i+1) != len(self.blocks))
-            block.opt.step()
+                # TODO: retain graph if inter_level_gradient is on
+                loss.backward(retain_graph=(i+1) != len(self.blocks))
+                block.opt.step()
 
-        return loss * 0.
+        if self.args.optimization == 'global':
+            self.opt.zero_grad()
+            total_loss.backward()
+            self.opt.step()
+
 
     def all_levels_recon(self, og):
         """ Expand all levels to input space to evaluate reconstruction """
@@ -199,14 +220,31 @@ class QStack(nn.Module):
             for j, block_ in enumerate(self.blocks[::-1][i+1:]):
                 x = block_.down(x, **kwargs)
 
+            # store output
             out_levels += [x]
+
+            # log reconstruction error
+            block.log.log('%d-recon' % block.id, F.mse_loss(x, og))
 
         return out_levels
 
 
+    def log(self, writer=None, should_print=False, prefix=''):
+        """ Logs the results """
 
+        if writer is not None:
+            for block in self.blocks:
+                for name, value in block.log.storage.items():
+                    writer.add_scalar(prefix + ' ' + name, value, self.log_step)
 
+            self.log_step += 1
 
+        if should_print:
+            print(prefix)
+            for block in self.blocks:
+                print(block.log.one_liner())
+            print('\n')
 
-
-
+        # reset logs
+        for block in self.blocks:
+            block.log.reset()

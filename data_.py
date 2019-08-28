@@ -32,7 +32,7 @@ class XYDataset(torch.utils.data.Dataset):
         else:
             x = x.float() / 255.
             y = y.long()
-    
+
 
         # for some reason mnist does better \in [0,1] than [-1, 1]
         if self.source == 'mnist':
@@ -48,7 +48,7 @@ class CLDataLoader(object):
 
         self.datasets = datasets_per_task
         self.loaders = [
-                torch.utils.data.DataLoader(x, batch_size=bs, shuffle=True, drop_last=train, num_workers=0) 
+                torch.utils.data.DataLoader(x, batch_size=bs, shuffle=True, drop_last=train, num_workers=0)
                 for x in self.datasets ]
 
     def __getitem__(self, idx):
@@ -61,21 +61,21 @@ class CLDataLoader(object):
 """ Permuted MNIST """
 def get_permuted_mnist(args):
     assert not args.use_conv
-    
+
     # fetch MNIST
     train = datasets.MNIST('../cl-pytorch/data/', train=True,  download=True)
     test  = datasets.MNIST('../cl-pytorch/data/', train=False, download=True)
 
     train_x, train_y = train.train_data, train.train_labels
     test_x,  test_y  = test.test_data,   test.test_labels
-    
+
     train_x = train_x.view(train_x.size(0), -1)
     test_x  = test_x.view(test_x.size(0), -1)
 
     train_ds, test_ds, inv_perms = [], [], []
     for task in range(args.n_tasks):
         perm = torch.arange(train_x.size(-1)) if task == 0 else torch.randperm(train_x.size(-1))
-        
+
         # build inverse permutations, so we can display samples
         inv_perm = torch.zeros_like(perm)
         for i in range(perm.size(0)):
@@ -84,14 +84,14 @@ def get_permuted_mnist(args):
         inv_perms += [inv_perm]
         train_ds  += [(train_x[:, perm], train_y)]
         test_ds   += [(test_x[:, perm],  test_y)]
-    
+
     train_ds = map(lambda x, y : XYDataset(x[0], x[1], **{'inv_perm': y, 'source': 'mnist'}), train_ds, inv_perms)
     test_ds  = map(lambda x, y : XYDataset(x[0], x[1], **{'inv_perm': y, 'source': 'mnist'}), test_ds,  inv_perms)
 
-    return train_ds, test_ds        
-    
+    return train_ds, test_ds
 
-""" Split MNIST into 5 tasks {{0,1}, ... {8,9}} """ 
+
+""" Split MNIST into 5 tasks {{0,1}, ... {8,9}} """
 def get_split_mnist(args):
     assert args.n_tasks in [5, 10], 'SplitMnist only works with 5 or 10 tasks'
     assert '1.' in str(torch.__version__)[:2], 'Use Pytorch 1.x!'
@@ -106,13 +106,13 @@ def get_split_mnist(args):
     # sort according to the label
     out_train = [
         (x,y) for (x,y) in sorted(zip(train_x, train_y), key=lambda v : v[1]) ]
-    
+
     out_test = [
         (x,y) for (x,y) in sorted(zip(test_x, test_y), key=lambda v : v[1]) ]
 
     train_x, train_y = [
             torch.stack([elem[i] for elem in out_train]) for i in [0,1] ]
-    
+
     test_x,  test_y  = [
             torch.stack([elem[i] for elem in out_test]) for i in [0,1] ]
 
@@ -128,7 +128,7 @@ def get_split_mnist(args):
     train_idx = [0] + sorted(train_idx)
 
     test_idx  = [((test_y + i) % 10).argmax() for i in range(10)]
-    test_idx  = [0] + sorted(test_idx) 
+    test_idx  = [0] + sorted(test_idx)
 
     train_ds, test_ds = [], []
     skip = 10 // args.n_tasks
@@ -138,7 +138,7 @@ def get_split_mnist(args):
 
         train_ds += [(train_x[tr_s:tr_e], train_y[tr_s:tr_e])]
         test_ds  += [(test_x[te_s:te_e],  test_y[te_s:te_e])]
-    
+
     train_ds = map(lambda x : XYDataset(x[0], x[1], **{'source': 'mnist'}), train_ds)
     test_ds  = map(lambda x : XYDataset(x[0], x[1], **{'source': 'mnist'}), test_ds)
 
@@ -164,19 +164,19 @@ def get_split_cifar10(args):
     # sort according to the label
     out_train = [
         (x,y) for (x,y) in sorted(zip(train_x, train_y), key=lambda v : v[1]) ]
-    
+
     out_test = [
         (x,y) for (x,y) in sorted(zip(test_x, test_y), key=lambda v : v[1]) ]
 
     train_x, train_y = [
             np.stack([elem[i] for elem in out_train]) for i in [0,1] ]
-    
+
     test_x,  test_y  = [
             np.stack([elem[i] for elem in out_test]) for i in [0,1] ]
 
     train_x = torch.Tensor(train_x).permute(0, 3, 1, 2).contiguous()
     test_x  = torch.Tensor(test_x).permute(0, 3, 1, 2).contiguous()
-    
+
     train_y = torch.Tensor(train_y)
     test_y  = torch.Tensor(test_y)
 
@@ -226,19 +226,19 @@ def get_split_cifar100(args):
     # sort according to the label
     out_train = [
         (x,y) for (x,y) in sorted(zip(train_x, train_y), key=lambda v : v[1]) ]
-    
+
     out_test = [
         (x,y) for (x,y) in sorted(zip(test_x, test_y), key=lambda v : v[1]) ]
 
     train_x, train_y = [
             np.stack([elem[i] for elem in out_train]) for i in [0,1] ]
-    
+
     test_x,  test_y  = [
             np.stack([elem[i] for elem in out_test]) for i in [0,1] ]
-    
+
     train_x = torch.Tensor(train_x).permute(0, 3, 1, 2).contiguous()
     test_x  = torch.Tensor(test_x).permute(0, 3, 1, 2).contiguous()
-    
+
     train_y = torch.Tensor(train_y)
     test_y  = torch.Tensor(test_y)
 
@@ -248,7 +248,7 @@ def get_split_cifar100(args):
 
     test_idx  = [((test_y + i) % 100).argmax() for i in range(100)]
     test_idx  = [0] + [x + 1 for x in sorted(test_idx)]
-    
+
     train_ds, valid_ds, test_ds = [], [], []
     skip = 1 # get all classes individually first
     for i in range(0, 100):
@@ -262,9 +262,9 @@ def get_split_cifar100(args):
         valid_ds += [(train_x[split:tr_e], train_y[split:tr_e])]
         test_ds  += [(test_x[te_s:te_e],  test_y[te_s:te_e])]
 
-    # next we randomly partition the dataset 
+    # next we randomly partition the dataset
     indices = [x for x in range(100)]
-    
+
     # TODO: check this
     # shuffle(indices)
 
@@ -317,14 +317,14 @@ def get_split_cifar100(args):
 def get_miniimagenet(args):
     ROOT_PATH = '/mnt/data/lpagec/imagenet/imagenet_images'
     ROOT_PATH_CSV = '../prototypical-network-pytorch/materials'
-    
-    size = 128
+
+    size = args.data_size
     args.n_tasks   = 20
     args.n_classes = 100
     args.multiple_heads = True
     args.n_classes_per_task = 5
     args.input_size = (3, size, size)
-    
+
     def get_data(setname):
         csv_path = os.path.join(ROOT_PATH_CSV, setname + '.csv')
         lines = [x.strip() for x in open(csv_path, 'r').readlines()][1:]
@@ -345,14 +345,14 @@ def get_miniimagenet(args):
             label.append(lb)
 
         return data, label
-        
+
 
     transform = transforms.Compose([
         transforms.Resize(size),
         transforms.CenterCrop(size),
         transforms.ToTensor(),
     ])
-    
+
     train_data, train_label = get_data('train')
     valid_data, valid_label = get_data('val')
     test_data,  test_label  = get_data('test')
@@ -367,7 +367,7 @@ def get_miniimagenet(args):
     all_data  = np.array(train_data  + valid_data  + test_data)
     all_label = np.array(train_label + valid_label + test_label)
 
-    
+
     train_ds, valid_ds, test_ds = [], [], []
     current_train, current_val, current_test = None, None, None
 
@@ -379,10 +379,10 @@ def get_miniimagenet(args):
         class_label = all_label[class_indices]
         split   = int(0.8 * class_data.shape[0])
         split_b = int(0.9 * class_data.shape[0])
-        
+
         data_train, data_valid, data_test = class_data[:split], class_data[split:split_b], class_data[split_b:]
         label_train, label_valid, label_test = class_label[:split], class_label[split:split_b], class_label[split_b:]
-    
+
         if current_train is None:
             current_train, current_valid, current_test = (data_train, label_train), (data_valid, label_valid), (data_test, label_test)
         else:
@@ -406,7 +406,7 @@ def get_miniimagenet(args):
     masks = []
     task_ids = [None for _ in range(args.n_tasks)]
     for task, task_data in enumerate(train_ds):
-        labels = np.unique(task_data[1]) 
+        labels = np.unique(task_data[1])
         assert labels.shape[0] == args.n_classes_per_task
         mask = torch.zeros(args.n_classes).to(args.device)
         mask[labels] = 1
