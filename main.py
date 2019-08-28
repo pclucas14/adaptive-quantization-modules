@@ -87,12 +87,6 @@ for run in range(1): #args.n_runs):
     # make dataloaders
     train_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True, False, False])]
 
-    # TODO: fix this (so it generalizes to more than 1 layer)
-    for i in range(len(args.layers.keys())):
-        args.layers[i].in_channel = args.layers[i].out_channel = args.input_size[0] if i== 0 else args.layers[i].embed_dim
-        args.layers[i].channel = args.layers[i].num_hiddens
-        args.layers[i].stride = args.layers[i].downsample
-
     # fetch model and ship to GPU
     generator  = QStack(args).to(args.device)
     #print(generator)
