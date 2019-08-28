@@ -1,0 +1,126 @@
+import os
+import sys
+import utils
+import argparse
+import numpy as np
+
+def get_default_layer_args(arglist):
+    """ layer / block specific parameters. Default values are given here """
+
+    parser = argparse.ArgumentParser(description='Vector Quantization')
+    add = parser.add_argument
+
+    # Quantization settings
+    add('--num_codebooks', type=int, default=1,
+            help='Number of codebooks')
+    add('--embed_dim', type=int, default=64,
+            help='Embedding size, `D` in paper')
+    add('--num_embeddings', type=int, default=256,
+            help='Number of embeddings to choose from, `K` in paper')
+    add('--commitment_cost', type=float, default=0.25,
+            help='Beta in the loss function')
+    add('--decay', type=float, default=0.99,
+            help='Moving av decay for codebook update')
+    add('--quant_size', type=int, nargs='+', default=[1], help='Height of Tensor Quantization')
+    add('--model', type=str, choices=['vqvae', 'gumbel', 'argmax'], default='vqvae')
+    add('--learning_rate', type=float, default=1e-3)
+
+    # VQVAE model, defaults like in paper
+    add('--enc_height', type=int, default=8,
+            help="Encoder output size, used for downsampling and KL")
+    add('--num_hiddens', type=int, default=128,
+            help="Number of channels for Convolutions, not ResNet")
+    add('--num_residual_hiddens', type=int, default = 32,
+            help="Number of channels for ResNet")
+    add('--num_residual_layers', type=int, default=2)
+
+
+    return parser.parse_args(arglist)
+
+
+def get_global_args(arglist):
+    """ Regular (not layer specific) arguments """
+
+    parser = argparse.ArgumentParser(description='Vector Quantization')
+    add = parser.add_argument
+
+    # Data and training settings
+    add('--data_folder', type=str, default="../cl-pytorch/data",
+            help='Location of data (will download data if does not exist)')
+    add('--dataset', type=str, default='split_cifar10',
+            help='Dataset name')
+    add('--data_size', type=int, default=128,
+            help='height / width of the input. Note that only Imagenet supports this')
+    add('--batch_size', type=int, default=10)
+    add('--max_iterations', type=int, default=None,
+            help="Max it per epoch, for debugging (default: None)")
+    add('--num_epochs', type=int, default=1,
+            help='number of epochs (default: 40)')
+    add('--device', type=str, default='cuda')
+
+    # new ones
+    add('--global_learning_rate', type=float, default=1e-4)
+    add('--optimization', type=str, default='blockwise', choices=['blockwise', 'global'])
+    add('--num_blocks', type=int, default=1, help='number of QLayers in QStack')
+
+    # Misc
+    add('--seed', type=int, default=521)
+    add('--debug', action='store_true')
+
+    # From old repo
+    add('--n_iters', type=int, default=1)
+    add('--samples_per_task', type=int, default=-1)
+
+    args = parser.parse_args(arglist)
+
+    return args
+
+
+def get_args():
+    # Assumption 1: specific block parameters are separated by three dashes
+    # Assumption 2: specific block parameters are specified AFTER regular args
+    # e.g. python main.py --batch_size 32 --num_blocks 2 ---block_1 --num_hiddens 32 ---block_2 ---enc_height 64
+
+    layer_flags = [i for i in range(len(sys.argv)) if sys.argv[i].startswith('---layer')]
+
+    global_args = sys.argv[1:len(sys.argv) if len(layer_flags) == 0 else min(layer_flags)]
+    global_args = get_global_args(global_args)
+
+    global_args.layers = {}
+
+    # now we add layer specific params
+    for i in range(len(layer_flags)):
+        layer_idx   = layer_flags[i]
+        end_idx     = len(sys.argv) if (i+1) == len(layer_flags) else layer_flags[i+1]
+        layer_no    = int(sys.argv[layer_idx].split('---layer_')[-1])
+        layer_args  = get_default_layer_args(sys.argv[layer_idx + 1:end_idx])
+
+        ''' (for now) copy the remaining args manually '''
+        layer_args.optimization = global_args.optimization
+
+        # make sure layer does not exist yet
+        assert layer_no not in global_args.layers.keys()
+        global_args.layers[layer_no] = layer_args
+
+    # for now let's specify every layer via the command line
+    assert len(layer_flags) == global_args.num_blocks
+
+    # specify remaining args
+    for i in range(global_args.num_blocks):
+        input_size = global_args.data_size if i == 0 else global_args.layers[i-1].enc_height
+        downsample = input_size // global_args.layers[i].enc_height
+        global_args.layers[i].stride = downsample
+
+        # original code had `i` instead of `i+1` for `global_args` index (I think the latter is correct)
+        input_channels = 3 if i == 0 else global_args.layers[i - 1].embed_dim
+        global_args.layers[i].in_channel = global_args.layers[i].out_channel = input_channels
+
+        # the rest is simply renaming
+        global_args.layers[i].channel    = global_args.layers[i].num_hiddens
+
+    args = global_args
+    args.model_name = 'M:{}_NI:{}_OPT:{}_{}'.format(args.layers[0].model[:5], args.n_iters,
+                                                 args.optimization[:5], np.random.randint(10000))
+    args.model_name = 'test' if args.debug else args.model_name
+
+    return args
