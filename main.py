@@ -31,9 +31,9 @@ maybe_create_dir(sample_dir)
 print('logging into %s' % log_dir)
 writer.add_text('hyperparameters', str(args), 0)
 
-
 def eval(name, max_task=-1):
     """ evaluate performance on held-out data """
+
     with torch.no_grad():
         generator.eval()
         loader = valid_loader if 'valid' in name else test_loader
@@ -47,7 +47,7 @@ def eval(name, max_task=-1):
                 data, target = data.to(args.device), target.to(args.device)
                 outs  = generator.all_levels_recon(data)
 
-            generator.log(prefix='%s task %d' % (name, task_t), writer=writer, should_print=True)
+            generator.log(prefix='%s---task---%d' % (name, task_t), writer=writer, should_print=True)
 
         if max_task >= 0:
             outs += [data]
@@ -59,6 +59,46 @@ def eval(name, max_task=-1):
 
             save_image(rescale_inv(all_samples).view(-1, *args.input_size), \
                     'samples/{}_test_{}_{}.png'.format(args.model_name, task_t, max_task))
+
+
+def eval_drift(real_img, indices):
+    """ evaluate how much the compressed representations deviate from ground truth """
+
+    assert len(real_img) == len(indices) # same amt of tasks
+
+    with torch.no_grad():
+        generator.eval()
+
+        for task_t, (real_data, idx) in enumerate(zip(real_img, indices)):
+
+            # 1) decode from old indices
+            old_recons = generator.decode_indices(idx)
+
+            # TODO: double check the ordering (make sure losses are monotically decreasing)
+
+            # 2) push the real data through the model to fetch the new argmin indices
+            out = generator(real_data)
+            new_idx = generator.fetch_indices()
+
+            # recons and indices are ordered from block T, block T - 1, ... block 1
+            # so we iterate over the blocks in the same order
+
+            for i, block in enumerate(reversed(generator.blocks)):
+
+                # log the reconstruction error for every block
+                loss_i = F.mse_loss(old_recons[i], real_data)
+                block.log.log('%d-recon-drift' % block.id, loss_i)
+
+                # log the relative change in argmin indices
+                cnt, total = 0., 0.
+                for old_idx_ij, new_idx_ij in zip(idx[i], new_idx[i]):
+                    cnt   += (old_idx_ij != new_idx_ij).sum().item()
+                    total += old_idx_ij.numel()
+
+                block.log.log('%d-idx-drift' % block.id, cnt / total)
+
+            generator.log(prefix='task---%d---' % task_t, writer=writer, should_print=True)
+
 
 
 # -------------------------------------------------------------------------------
@@ -76,13 +116,16 @@ if args.optimization == 'global':
 else:
     kwargs = {}
 
-final_accs, finetune_accs  = [], []
 for run in range(1): #args.n_runs):
+
     # reproducibility
-    set_seed(521)
+    set_seed(args.seed)
 
     # fetch data
     data = locate('data.get_%s' % args.dataset)(args)
+
+    # build buffers to store data & indices (for drift monitoring)
+    drift_images, drift_indices = [], []
 
     # make dataloaders
     train_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True, False, False])]
@@ -115,11 +158,16 @@ for run in range(1): #args.n_runs):
                     generator.optimize(input_x, **kwargs)
 
                 if (i + 1) % 30 == 0:
-                    generator.log(prefix='Train task %d' % task, writer=writer, should_print=True)
+                    generator.log(prefix='Train task %d---' % task, writer=writer, should_print=True)
 
-                if (i + 1) % 120 == 0:
-                    print('iteration %d ' % i)
-                    eval('valid', max_task=task)
-                    eval('test',  max_task=task)
-                    generator.train()
-                    print('\n\n')
+        if task > 0:
+            eval_drift(drift_images, drift_indices)
+
+        # store the last minibatch
+        drift_images  += [input_x]
+        drift_indices += [generator.fetch_indices()]
+
+        # evaluate on valid set
+        eval('valid', max_task=task)
+        generator.train()
+        print('\n\n')
