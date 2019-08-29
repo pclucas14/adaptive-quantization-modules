@@ -119,8 +119,13 @@ def get_args():
         global_args.layers[i].channel    = global_args.layers[i].num_hiddens
 
     args = global_args
-    args.model_name = 'M:{}_NI:{}_OPT:{}_{}'.format(args.layers[0].model[:5], args.n_iters,
+    args.model_name = 'M:{}_NB:{}_NI:{}_OPT:{}_{}'.format(args.layers[0].model[:5], args.num_blocks, args.n_iters,
                                                  args.optimization[:5], np.random.randint(10000))
     args.model_name = 'test' if args.debug else args.model_name
 
     return args
+
+
+def get_debug_args():
+    sys.argv[1:] = ['--num_blocks', '2', '---layer_0', '--enc_height', '64', '--num_embeddings', '100', '--embed_dim', '44', '---layer_1', '--model', 'argmax', '--enc_height', '32', '--num_codebooks', '2', '--quant_size', '2', '1', '--num_embeddings', '100', '--embed_dim', '44']
+    return get_args()
