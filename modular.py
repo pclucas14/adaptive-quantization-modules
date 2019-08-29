@@ -28,7 +28,7 @@ class QLayer(nn.Module):
         for i, size in zip(range(args.num_codebooks), args.quant_size):
             if args.model == 'vqvae':
                 qt += [Quantize(args.embed_dim // args.num_codebooks,
-                            args.num_embeddings // size ** 2,
+                            args.num_embeddings, # // size ** 2,
                             decay=args.decay, size=size)]
             elif args.model == 'gumbel':
                 qt += [GumbelQuantize(args.embed_dim // args.num_codebooks)]
@@ -44,6 +44,18 @@ class QLayer(nn.Module):
         # loss specific parameters
         self.register_parameter('dec_log_stdv', \
                 torch.nn.Parameter(torch.Tensor([0.])))
+
+
+    def idx_2_hid(self, indices):
+        """ fetch latent representation from indices """
+
+        assert len(indices) == len(self.quantize)
+
+        out = []
+        for idx, qt in zip(indices, self.quantize):
+            out += [qt.idx_2_hid(idx)]
+
+        return torch.cat(out, dim=1)
 
 
     def up(self, x, **kwargs):
@@ -73,10 +85,11 @@ class QLayer(nn.Module):
         self.diffs   = diffs
         self.argmins = argmins
 
-        # store as scalars for conveniance
-        for i in range(len(self.diffs)):
-            self.log.log('%d-ppl_%d'  % (self.id, i), self.ppls[i])
-            self.log.log('%d-diff_%d' % (self.id, i), self.diffs[i])
+        if not kwargs.get('no_log', False):
+            # store as scalars for convenience
+            for i in range(len(self.diffs)):
+                self.log.log('%d-ppl_%d'  % (self.id, i), self.ppls[i])
+                self.log.log('%d-diff_%d' % (self.id, i), self.diffs[i])
 
         return z_q
 
@@ -104,7 +117,8 @@ class QLayer(nn.Module):
         recon = F.mse_loss(self.output, target)
 
         self.recon = recon.item()
-        self.log.log('%d-recon' % self.id, self.recon)
+        if not kwargs.get('no_log', False):
+            self.log.log('%d-recon' % self.id, self.recon)
 
         return recon, diffs
 
@@ -206,19 +220,36 @@ class QStack(nn.Module):
             self.opt.step()
 
 
-    def all_levels_recon(self, og):
+    def decode_indices(self, indices):
+        """ fetch latent representation from indices """
+        #raise NotImplementedError
+
+        out_levels = []
+        for i, block in enumerate(reversed(self.blocks)):
+            # current block
+            x = block.idx_2_hid(indices[i])
+            x = block.decoder(x)
+            for j, block_ in enumerate(self.blocks[::-1][i+1:]):
+                x = block_.decoder(x)
+
+            # store output
+            out_levels += [x]
+
+        return out_levels
+
+
+    def all_levels_recon(self, og, **kwargs):
         """ Expand all levels to input space to evaluate reconstruction """
 
         # encode
-        kwargs = {'inter_level_stream' : True, 'stop':True}
         self.up(og, **kwargs)
 
         out_levels = []
         for i, block in enumerate(reversed(self.blocks)):
             # current block
-            x = block.down(block.z_q, **kwargs)
+            x = block.decoder(block.z_q)
             for j, block_ in enumerate(self.blocks[::-1][i+1:]):
-                x = block_.down(x, **kwargs)
+                x = block_.decoder(x)
 
             # store output
             out_levels += [x]
@@ -248,3 +279,25 @@ class QStack(nn.Module):
         # reset logs
         for block in self.blocks:
             block.log.reset()
+
+
+if __name__ == '__main__':
+    # import pdb; pdb.set_trace()
+    import args
+    import pdb; pdb.set_trace()
+    model = QStack(args.get_debug_args())
+    model.eval()
+
+    x= torch.FloatTensor(16, 3, 128, 128).normal_()
+    outs = model.all_levels_recon(x)
+    new  = model.all_levels_recon_new(x)
+    '''
+    block = model.blocks[0]
+    idx = torch.FloatTensor(17, 64, 64).uniform_(0, 21).long()
+    xx = block.idx_2_hid([idx])
+
+    idx = [[idx], [idx[:, :16, :16], idx[:, :32, :32]]]
+    outs = model.decode_indices(idx[::-1])
+    import pdb; pdb.set_trace()
+    xx = 1
+    '''
