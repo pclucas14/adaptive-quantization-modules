@@ -96,6 +96,7 @@ class Quantize(nn.Module):
             )
             embed_normalized = self.embed_avg / cluster_size.unsqueeze(0)
             self.embed.data.copy_(embed_normalized)
+
             # bookkeeping
             self.count.data.add_(embed_onehot.sum(0).long())
 
@@ -107,11 +108,25 @@ class Quantize(nn.Module):
         quantize = quantize.transpose(3,2).reshape(bs, hH, hH, C)
 
         quantize = quantize.permute(0, 3, 1, 2)
+        #import pdb; pdb.set_trace()
+        #test = self.idx_2_hid(embed_ind)
 
         return quantize, diff, embed_ind, perplexity
 
+
     def embed_code(self, embed_id):
         return F.embedding(embed_id, self.embed.permute(3, 0, 1, 2))
+
+
+    def idx_2_hid(self, indices):
+        out = self.embed_code(indices) # bs, H, W, s, s, C
+        if self.size > 1:
+            bs, H, C = out.size(0), self.size * out.size(1), out.size(-1)
+            out = out.transpose(3, 2).reshape(bs, H, H, C)
+        else:
+            out = out.squeeze(-2).squeeze(-2)
+
+        return out.permute(0, 3, 1, 2)
 
 
 class GumbelQuantize(nn.Module):
@@ -126,10 +141,12 @@ class GumbelQuantize(nn.Module):
         self.decay_schedule = decay_schedule
         self.batch_count = 0
 
+
     def temp_update(self):
         self.batch_count += 1
         if self.batch_count % self.decay_schedule == 0:
             self.temp=max(self.temp*self.decay_rate, self.min_temp)
+
 
     def sample_gumbel(self, shape, eps=1e-20):
         U = torch.rand(shape)
@@ -189,6 +206,11 @@ class GumbelQuantize(nn.Module):
         return z_q, 0., embed_ind, perplexity
 
 
+    def idx_2_hid(self, indices):
+        out = F.one_hot(indices, self.n_classes) # bs, H, W, C
+        return out.permute(0, 3, 1, 2).float()
+
+
 class AQuantize(nn.Module):
     """ Argmax autoencoder quantization step """
     def __init__(self, dim, decay=0.99, eps=1e-10):
@@ -225,6 +247,10 @@ class AQuantize(nn.Module):
 
         return quantize, diversity, embed_ind, perplexity
 
+
+    def idx_2_hid(self, indices):
+        out = F.one_hot(indices, self.dim) # bs, H, W, C
+        return out.permute(0, 3, 1, 2).float()
 
 
 class ResBlock(nn.Module):
