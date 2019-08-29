@@ -109,7 +109,7 @@ class QLayer(nn.Module):
         return self.output
 
 
-    def loss(self, target):
+    def loss(self, target, **kwargs):
         """ Loss calculation """
 
         # TODO: should we weight these differently ?
@@ -193,14 +193,13 @@ class QStack(nn.Module):
 
         total_loss = 0.
         for i, block in enumerate(self.blocks):
-            # for now, let's fix the target of the subblocks to be `z_e` and not `z_q`
-            target_i = target if i == 0 else self.blocks[i-1].z_q# z_e
+            # TODO: check performance difference between using `z_q` vs `z_e`
+            target_i = target if i == 0 else self.blocks[i-1].z_q
 
             # it's important to detach the target! (similar to RL / Q-learning)
-            recon, diff = block.loss(target_i.detach())
+            recon, diff = block.loss(target_i.detach(), **kwargs)
 
             # TODO: figure out a way to train only on final recon
-            # TODO: put this back
             # loss = (0. if i > 0 else 1.) * recon + block.args.commitment_cost * diff
             loss = recon + block.args.commitment_cost * diff
 
@@ -222,7 +221,6 @@ class QStack(nn.Module):
 
     def decode_indices(self, indices):
         """ fetch latent representation from indices """
-        #raise NotImplementedError
 
         out_levels = []
         for i, block in enumerate(reversed(self.blocks)):
@@ -236,6 +234,19 @@ class QStack(nn.Module):
             out_levels += [x]
 
         return out_levels
+
+
+    def fetch_indices(self):
+        """ fetches the latest set of indices stored in block stack """
+
+        # note: the returned array should be ordered for `decode_indices`
+        # i.e. indices[0] == most nested / deepest block
+
+        indices = []
+        for block in reversed(self.blocks):
+            indices += [block.argmins]
+
+        return indices
 
 
     def all_levels_recon(self, og, **kwargs):
