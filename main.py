@@ -9,6 +9,7 @@ from tensorboardX import SummaryWriter
 from copy   import deepcopy
 from pydoc  import locate
 
+from buffer  import *
 from utils   import *
 from data    import *
 from args    import get_args
@@ -74,8 +75,6 @@ def eval_drift(real_img, indices):
             # 1) decode from old indices
             old_recons = generator.decode_indices(idx)
 
-            # TODO: double check the ordering (make sure losses are monotically decreasing)
-
             # 2) push the real data through the model to fetch the new argmin indices
             out = generator(real_data)
             new_idx = generator.fetch_indices()
@@ -128,11 +127,13 @@ for run in range(1): #args.n_runs):
     drift_images, drift_indices = [], []
 
     # make dataloaders
-    train_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True, False, False])]
+    train_loader, valid_loader, test_loader  = \
+            [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True] + [False] * 2)]
 
     # fetch model and ship to GPU
     generator  = QStack(args).to(args.device)
-    #print(generator)
+
+    buffer = Buffer(args)
 
     print("number of generator  parameters:", sum([np.prod(p.size()) for p \
             in generator.parameters()]))
@@ -153,19 +154,51 @@ for run in range(1): #args.n_runs):
 
                 for _ in range(args.n_iters):
 
+                    if task > 0 and args.rehearsal:
+                        # TODO: make this layer agnostic
+                        re_x, re_y     = buffer.sample(input_x.size(0))
+                        re_x           = prev_gen.blocks[0].decoder(prev_gen.blocks[0].idx_2_hid([re_x]))
+                        data_x, data_y = torch.cat((input_x, re_x)), torch.cat((input_y, re_y))
+                    else:
+                        data_x, data_y = input_x, input_y
+
                     # generator
-                    generator(input_x, **kwargs)
-                    generator.optimize(input_x, **kwargs)
+                    generator(data_x, **kwargs)
+                    generator.optimize(data_x, **kwargs)
 
                 if (i + 1) % 30 == 0:
                     generator.log(prefix='Train task %d---' % task, writer=writer, should_print=True)
 
+                if i > 200:
+                    buffer.add_reservoir(generator.fetch_indices()[-1][0][:input_x.size(0)], input_y, task)
+
+        generator.eval()
+        generator(input_x)
+        to_be_added = (input_x, generator.fetch_indices())
+
         if task > 0:
+            if args.update_representations:
+
+                # decode using the old generator, and encode back with new ones
+                new_indices = []
+                for idx in drift_indices:
+                    # TODO: support multi level decoding & re-encoding
+                    old_recon = prev_gen.decode_indices(idx)[-1]
+
+                    generator(old_recon)
+                    new_indices += [generator.fetch_indices()]
+
+                drift_indices = new_indices
+
+
             eval_drift(drift_images, drift_indices)
 
         # store the last minibatch
-        drift_images  += [input_x]
-        drift_indices += [generator.fetch_indices()]
+        drift_images  += [to_be_added[0]]
+        drift_indices += [to_be_added[1]]
+
+        if args.rehearsal or args.update_representations:
+            prev_gen = deepcopy(generator)
 
         # evaluate on valid set
         eval('valid', max_task=task)

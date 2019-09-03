@@ -70,6 +70,9 @@ def get_global_args(arglist):
     # From old repo
     add('--n_iters', type=int, default=1)
     add('--samples_per_task', type=int, default=-1)
+    add('--update_representations', type=int, default=1)
+    add('--rehearsal', type=int, default=1)
+    add('--mem_size', type=int, default=600)
 
     args = parser.parse_args(arglist)
 
@@ -119,8 +122,9 @@ def get_args():
         global_args.layers[i].channel    = global_args.layers[i].num_hiddens
 
     args = global_args
-    args.model_name = 'M:{}_NB:{}_NI:{}_OPT:{}_{}'.format(args.layers[0].model[:5], args.num_blocks, args.n_iters,
-                                                 args.optimization[:5], np.random.randint(10000))
+    args.model_name = 'M:{}_NB:{}_NI:{}_OPT:{}_UR:{}_Re:{}_{}'.format(args.layers[0].model[:5], args.num_blocks, args.n_iters,
+                                                 args.optimization[:5], args.update_representations, args.rehearsal,
+                                                 np.random.randint(10000))
     args.model_name = 'test' if args.debug else args.model_name
 
     return args
