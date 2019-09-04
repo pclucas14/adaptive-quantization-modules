@@ -58,6 +58,28 @@ class CLDataLoader(object):
         return len(self.loaders)
 
 
+""" Kitti Lidar continual dataset """
+def get_kitti(args):
+    # get datasets
+    args.input_size = (3, 40, 512)
+    from kitti_loader import Kitti
+    max_task = 61 if args.max_task == -1 else args.max_task
+    dss_train = [Kitti(args, task_id=i) for i in range(max_task) if i != 17]
+    dss_valid = [Kitti(args, task_id=i) for i in range(max_task) if i != 17]
+    dss_test  = [Kitti(args, task_id=i) for i in range(max_task) if i != 17]
+
+    for (ds_tr, ds_val, ds_te) in zip(dss_train, dss_valid, dss_test):
+        assert len(ds_tr.mapper) == len(ds_val.mapper) == len(ds_te.mapper)
+        len_ = len(ds_tr.mapper)
+        split_a, split_b = int(0.8 * len_), int(0.9 * len_)
+
+        ds_tr.mapper  = ds_tr.mapper[:split_a]
+        ds_val.mapper = ds_val.mapper[split_a:split_b]
+        ds_te.mapper  = ds_te.mapper[split_b:]
+
+    return dss_train, dss_valid, dss_test
+
+
 """ Permuted MNIST """
 def get_permuted_mnist(args):
     assert not args.use_conv
