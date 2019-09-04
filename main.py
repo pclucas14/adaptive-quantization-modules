@@ -19,10 +19,10 @@ args = get_args()
 
 # functions
 Mean = lambda x : sum(x) / len(x)
-rescale_inv = lambda x : x * 0.5 + 0.5
+rescale_inv = (lambda x : x * 0.5 + 0.5)
 
 # spawn writer
-log_dir    = join('runs', args.model_name)
+log_dir    = join('runs_2', args.model_name)
 sample_dir = join(log_dir, 'samples')
 writer     = SummaryWriter(log_dir=log_dir)
 
@@ -52,13 +52,20 @@ def eval(name, max_task=-1):
 
         if max_task >= 0:
             outs += [data]
-
             all_samples = torch.stack(outs)             # L, bs, 3, 32, 32
             all_samples = all_samples.transpose(1,0)
             all_samples = all_samples.contiguous()      # bs, L, 3, 32, 32
             all_samples = all_samples.view(-1, *data.shape[-3:])
 
-            save_image(rescale_inv(all_samples).view(-1, *args.input_size), \
+            if 'kitti' in args.dataset:
+                # save lidar to samples
+                from kitti_utils import from_polar
+                all_samples = (all_samples if args.xyz else from_polar(all_samples))[:12]
+                np.save(open('lidars/{}_test{}_{}'.format(args.model_name, task_t, max_task), 'wb'),
+                        all_samples.cpu().data.numpy(), allow_pickle=False)
+
+            else:
+                save_image(rescale_inv(all_samples).view(-1, *args.input_size), \
                     'samples/{}_test_{}_{}.png'.format(args.model_name, task_t, max_task))
 
 
@@ -145,8 +152,7 @@ for run in range(1): #args.n_runs):
             sample_amt = 0
 
             for i, (input_x, input_y) in enumerate(tr_loader):
-                if i % 5 == 0 : print('  ', i, ' / ', len(tr_loader), end='\r')
-
+                if i % 5 == 0 : print('  ', i, ' / ', len(tr_loader)) #, end='\r')
                 if sample_amt > args.samples_per_task > 0: break
                 sample_amt += input_x.size(0)
 
@@ -163,7 +169,7 @@ for run in range(1): #args.n_runs):
                         data_x, data_y = input_x, input_y
 
                     # generator
-                    generator(data_x, **kwargs)
+                    out = generator(data_x, **kwargs)
                     generator.optimize(data_x, **kwargs)
 
                 if (i + 1) % 30 == 0:
@@ -191,7 +197,8 @@ for run in range(1): #args.n_runs):
                 drift_indices = new_indices
 
 
-            eval_drift(drift_images, drift_indices)
+            # TODO: put this back
+            # eval_drift(drift_images, drift_indices)
 
         # store the last minibatch
         drift_images  += [to_be_added[0]]

@@ -33,7 +33,7 @@ def get_default_layer_args(arglist):
     add('--num_residual_hiddens', type=int, default = 32,
             help="Number of channels for ResNet")
     add('--num_residual_layers', type=int, default=2)
-
+    add('--stride', type=int, nargs='+', default=[2], help='use if strides are uneven across H/W')
 
     return parser.parse_args(arglist)
 
@@ -62,6 +62,10 @@ def get_global_args(arglist):
     add('--global_learning_rate', type=float, default=1e-4)
     add('--optimization', type=str, default='blockwise', choices=['blockwise', 'global'])
     add('--num_blocks', type=int, default=1, help='number of QLayers in QStack')
+    add('--input_channels', type=int, default=3, help='3 for RBG, 2 for Lidar')
+    add('--max_task', type=int, default=-1)
+
+    add('--xyz', action='store_true', help='if True, xyz coordinates are used instead of polar')
 
     # Misc
     add('--seed', type=int, default=521)
@@ -111,18 +115,24 @@ def get_args():
     # specify remaining args
     for i in range(global_args.num_blocks):
         input_size = global_args.data_size if i == 0 else global_args.layers[i-1].enc_height
-        downsample = input_size // global_args.layers[i].enc_height
-        global_args.layers[i].stride = downsample
 
         # original code had `i` instead of `i+1` for `global_args` index (I think the latter is correct)
-        input_channels = 3 if i == 0 else global_args.layers[i - 1].embed_dim
+        input_channels = global_args.input_channels if i == 0 else global_args.layers[i - 1].embed_dim
         global_args.layers[i].in_channel = global_args.layers[i].out_channel = input_channels
+
+        len_stride = len(global_args.layers[i].stride)
+        assert len_stride <= 2
+        if len_stride == 1:
+            global_args.layers[i].stride = global_args.layers[i].stride *  2
+        global_args.layers[i].downsample = max(global_args.layers[i].stride)
 
         # the rest is simply renaming
         global_args.layers[i].channel    = global_args.layers[i].num_hiddens
 
+
     args = global_args
-    args.model_name = 'M:{}_NB:{}_NI:{}_OPT:{}_UR:{}_Re:{}_{}'.format(args.layers[0].model[:5], args.num_blocks, args.n_iters,
+    args.model_name = 'M:{}_DS:{}_NB:{}_NI:{}_OPT:{}_UR:{}_Re:{}_{}'.format(args.layers[0].model[:5], args.dataset[:10],
+                                                 args.num_blocks, args.n_iters,
                                                  args.optimization[:5], args.update_representations, args.rehearsal,
                                                  np.random.randint(10000))
     args.model_name = 'test' if args.debug else args.model_name

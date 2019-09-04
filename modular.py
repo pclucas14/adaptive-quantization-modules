@@ -114,7 +114,8 @@ class QLayer(nn.Module):
 
         # TODO: should we weight these differently ?
         diffs = sum(self.diffs) / len(self.diffs)
-        recon = F.mse_loss(self.output, target)
+        #recon = F.mse_loss(self.output, target)
+        recon = F.l1_loss(self.output, target)
 
         self.recon = recon.item()
         if not kwargs.get('no_log', False):

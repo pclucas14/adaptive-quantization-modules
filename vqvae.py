@@ -56,7 +56,8 @@ class Quantize(nn.Module):
         bs, hH, _, C = x.size()
         real_hH = hH // self.size
 
-        x = x.view(bs, real_hH, self.size, real_hH, self.size, C).transpose(2,3).contiguous()
+        # x = x.view(bs, real_hH, self.size, real_hH, self.size, C).transpose(2,3).contiguous()
+        x = x.view(bs, real_hH, self.size, -1, self.size, C).transpose(2,3).contiguous()
 
         # funky stuff out
         #x = x.transpose(3,2).reshape(bs, hH, hH, C)
@@ -105,10 +106,10 @@ class Quantize(nn.Module):
         quantize = x + (quantize - x).detach()
 
         # funky stuff out
-        quantize = quantize.transpose(3,2).reshape(bs, hH, hH, C)
+        # quantize = quantize.transpose(3,2).reshape(bs, hH, hH, C)
+        quantize = quantize.transpose(3,2).reshape(bs, hH, -1, C)
 
         quantize = quantize.permute(0, 3, 1, 2)
-        #import pdb; pdb.set_trace()
         #test = self.idx_2_hid(embed_ind)
 
         return quantize, diff, embed_ind, perplexity
@@ -277,38 +278,34 @@ class Encoder(nn.Module):
 
         in_channel = args.in_channel
         channel = args.channel
-        stride = args.stride
+        downsample = args.downsample
         num_residual_layers = args.num_residual_layers
         num_residual_hiddens = args.num_residual_hiddens
 
-        if stride == 8:
+        if args.stride[0] != args.stride[1]:
+            # for lidar only
+            assert args.stride[0] < args.stride[1]
+            ks = (3, 4)
+        else:
+            ks = 4
+
+        if downsample == 4:
             blocks = [
-                nn.Conv2d(in_channel, channel // 2, 4, stride=2, padding=1),
+                nn.Conv2d(in_channel, channel // 2, ks, stride=args.stride, padding=1),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(channel // 2, channel, 4, stride=2, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(channel, channel, 4, stride=2, padding=1),
+                nn.Conv2d(channel // 2, channel, ks, stride=args.stride, padding=1),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(channel, channel, 3, padding=1),
             ]
 
-        if stride == 4:
+        elif downsample == 2:
             blocks = [
-                nn.Conv2d(in_channel, channel // 2, 4, stride=2, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(channel // 2, channel, 4, stride=2, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(channel, channel, 3, padding=1),
-            ]
-
-        elif stride == 2:
-            blocks = [
-                nn.Conv2d(in_channel, channel // 2, 4, stride=2, padding=1),
+                nn.Conv2d(in_channel, channel // 2, ks, stride=args.stride, padding=1),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(channel // 2, channel, 3, padding=1),
             ]
 
-        elif stride == 1:
+        elif downsample == 1:
             blocks = [
                 nn.Conv2d(in_channel, channel // 2, 5, padding=2),
                 nn.ReLU(inplace=True),
@@ -337,7 +334,14 @@ class Decoder(nn.Module):
         channel = args.num_hiddens
         num_residual_hiddens = args.num_residual_hiddens
         num_residual_layers = args.num_residual_layers
-        stride = args.stride
+        downsample = args.downsample
+
+        if args.stride[0] != args.stride[1]:
+            # for lidar only
+            assert args.stride[0] < args.stride[1]
+            ks = (3, 4)
+        else:
+            ks = 4
 
         blocks = [nn.Conv2d(in_channel, channel, 3, padding=1)]
 
@@ -346,26 +350,17 @@ class Decoder(nn.Module):
 
         blocks += [nn.ReLU(inplace=True)]
 
-        if stride == 8:
+        if downsample == 4:
             blocks += [
-                nn.ConvTranspose2d(channel, channel, 4, stride=2, padding=1),
+                nn.ConvTranspose2d(channel, channel // 2, ks, stride=args.stride, padding=1),
                 nn.ReLU(inplace=True),
-                nn.ConvTranspose2d(channel, channel // 2, 4, stride=2, padding=1),
-                nn.ReLU(inplace=True),
-                nn.ConvTranspose2d(channel // 2, out_channel, 4, stride=2, padding=1),
+                nn.ConvTranspose2d(channel // 2, out_channel, ks, stride=args.stride, padding=1),
             ]
 
-        if stride == 4:
-            blocks += [
-                nn.ConvTranspose2d(channel, channel // 2, 4, stride=2, padding=1),
-                nn.ReLU(inplace=True),
-                nn.ConvTranspose2d(channel // 2, out_channel, 4, stride=2, padding=1),
-            ]
+        elif downsample == 2:
+            blocks += [nn.ConvTranspose2d(channel, out_channel, ks, stride=args.stride, padding=1)]
 
-        elif stride == 2:
-            blocks += [nn.ConvTranspose2d(channel, out_channel, 4, stride=2, padding=1)]
-
-        elif stride == 1:
+        elif downsample == 1:
             blocks += [nn.Conv2d(channel, out_channel, 3, padding=1)]
 
         self.blocks = nn.Sequential(*blocks)
