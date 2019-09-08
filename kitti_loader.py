@@ -63,6 +63,14 @@ class Kitti(data.Dataset):
             del self.task_dict[j][offset] # - ij]
             ij += 1
 
+        # reverse the list for now
+        task_dict_ = {}
+        for key, value in task_dict.items():
+            task_dict_[len(task_dict) - key - 1] = value
+
+        xx = [len(task_dict[i]) for i in range(len(task_dict))]
+        yy = [len(task_dict_[i]) for i in range(len(task_dict_))]
+        self.task_dict = task_dict_
 
         if task_id != -1:
             self.mapper = self.task_dict[task_id]
@@ -77,7 +85,7 @@ class Kitti(data.Dataset):
 
         out = point_cloud.squeeze()[:, :, ::(self.pre // self.post)]
 
-        return out.astype('float32'), np.array([0.])
+        return out.astype('float32'), np.array([0])
 
     def get_og(self, index):
         path = self.mapper[index]
