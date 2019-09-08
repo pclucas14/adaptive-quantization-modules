@@ -34,6 +34,7 @@ def get_default_layer_args(arglist):
             help="Number of channels for ResNet")
     add('--num_residual_layers', type=int, default=2)
     add('--stride', type=int, nargs='+', default=[2], help='use if strides are uneven across H/W')
+    add('--downsample', type=int, default=1, help='downsampling at every layer')
 
     return parser.parse_args(arglist)
 
@@ -120,11 +121,17 @@ def get_args():
         input_channels = global_args.input_channels if i == 0 else global_args.layers[i - 1].embed_dim
         global_args.layers[i].in_channel = global_args.layers[i].out_channel = input_channels
 
+        # parse the quantization sizes:
+        for cb_idx in range(len(global_args.layers[i].quant_size)):
+            qs = global_args.layers[i].quant_size[cb_idx]
+            if qs > 100: # for now we encode quant size (4, 2) as 402
+                qH, qW = qs // 100, qs % 100
+                global_args.layers[i].quant_size[cb_idx] = (qH, qW)
+
         len_stride = len(global_args.layers[i].stride)
         assert len_stride <= 2
         if len_stride == 1:
             global_args.layers[i].stride = global_args.layers[i].stride *  2
-        global_args.layers[i].downsample = max(global_args.layers[i].stride)
 
         # the rest is simply renaming
         global_args.layers[i].channel    = global_args.layers[i].num_hiddens
