@@ -50,7 +50,7 @@ def get_global_args(arglist):
             help='Location of data (will download data if does not exist)')
     add('--dataset', type=str, default='split_cifar10',
             help='Dataset name')
-    add('--data_size', type=int, default=128,
+    add('--data_size', type=int, nargs='+', default=(128, 128, 3),
             help='height / width of the input. Note that only Imagenet supports this')
     add('--batch_size', type=int, default=10)
     add('--max_iterations', type=int, default=None,
@@ -63,21 +63,22 @@ def get_global_args(arglist):
     add('--global_learning_rate', type=float, default=1e-4)
     add('--optimization', type=str, default='blockwise', choices=['blockwise', 'global'])
     add('--num_blocks', type=int, default=1, help='number of QLayers in QStack')
-    add('--input_channels', type=int, default=3, help='3 for RBG, 2 for Lidar')
-    add('--max_task', type=int, default=-1)
 
     add('--xyz', action='store_true', help='if True, xyz coordinates are used instead of polar')
 
     # Misc
     add('--seed', type=int, default=521)
     add('--debug', action='store_true')
+    add('--recon_th', type=float, default=1e-3, help='satisfying reconstruction threshold')
 
     # From old repo
+    add('--max_task', type=int, default=-1)
     add('--n_iters', type=int, default=1)
     add('--samples_per_task', type=int, default=-1)
     add('--update_representations', type=int, default=1)
     add('--rehearsal', type=int, default=1)
     add('--mem_size', type=int, default=600)
+    add('--n_classes', type=int, default=1)
 
     args = parser.parse_args(arglist)
 
@@ -105,6 +106,9 @@ def get_args():
 
         ''' (for now) copy the remaining args manually '''
         layer_args.optimization = global_args.optimization
+        layer_args.rehearsal    = global_args.rehearsal
+        layer_args.mem_size     = global_args.mem_size
+        layer_args.n_classes    = global_args.n_classes
 
         # make sure layer does not exist yet
         assert layer_no not in global_args.layers.keys()
@@ -113,20 +117,55 @@ def get_args():
     # for now let's specify every layer via the command line
     assert len(layer_flags) == global_args.num_blocks
 
+    # we want to know what the compression factor is at every level
+    current_shape = global_args.data_size[:2] # e.g. (128, 128)
+
     # specify remaining args
     for i in range(global_args.num_blocks):
-        input_size = global_args.data_size if i == 0 else global_args.layers[i-1].enc_height
+        input_size = global_args.data_size[0] if i == 0 else global_args.layers[i-1].enc_height
 
         # original code had `i` instead of `i+1` for `global_args` index (I think the latter is correct)
-        input_channels = global_args.input_channels if i == 0 else global_args.layers[i - 1].embed_dim
+        input_channels = global_args.data_size[-1] if i == 0 else global_args.layers[i - 1].embed_dim
         global_args.layers[i].in_channel = global_args.layers[i].out_channel = input_channels
 
+
+        ''' stride '''
+        stride = global_args.layers[i].stride
+        if type(stride) == int:
+            stride = (stride, stride)
+            global_args.layers[i].stride = stride
+
+
+        ''' compression rate '''
+        comp_map = {1:1, 2:1, 4:2}
+        per_dim_ds = comp_map[global_args.layers[i].downsample]
+
+        current_shape = (current_shape[0] // (stride[0] ** per_dim_ds),
+                         current_shape[1] // (stride[1] ** per_dim_ds))
+
         # parse the quantization sizes:
+        total_idx = 0.
+        argmin_shapes = []
+
         for cb_idx in range(len(global_args.layers[i].quant_size)):
             qs = global_args.layers[i].quant_size[cb_idx]
             if qs > 100: # for now we encode quant size (4, 2) as 402
                 qH, qW = qs // 100, qs % 100
-                global_args.layers[i].quant_size[cb_idx] = (qH, qW)
+                qs = (qH, qW)
+
+            ''' quant size '''
+            if type(qs) == int:
+                qs = (qs, qs)
+
+            global_args.layers[i].quant_size[cb_idx] = qs
+
+            # count the amount of indices for a specific block
+            total_idx += np.prod(current_shape) / np.prod(qs)
+
+            argmin_shapes += [(current_shape[0] // qs[0], current_shape[1] // qs[1])]
+
+        global_args.layers[i].comp_rate = np.prod(global_args.data_size) / float(total_idx)
+        global_args.layers[i].argmin_shapes = argmin_shapes
 
         len_stride = len(global_args.layers[i].stride)
         assert len_stride <= 2
