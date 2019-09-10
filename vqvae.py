@@ -37,13 +37,16 @@ class Quantize(nn.Module):
     def __init__(self, dim, num_embeddings, decay=0.99, eps=1e-5, size=1):
         super().__init__()
 
+        if type(size) == int:
+            size = (size, size)
+
         self.dim = dim
         self.num_embeddings = num_embeddings
         self.decay = decay
         self.eps = eps
         self.size = size
 
-        embed = torch.randn(self.size, self.size, dim, num_embeddings).normal_(0, 0.02)
+        embed = torch.randn(*self.size, dim, num_embeddings).normal_(0, 0.02)
         self.register_buffer('embed', embed)
         self.register_buffer('cluster_size', torch.zeros(num_embeddings))
         self.register_buffer('embed_avg', embed.clone())
@@ -53,16 +56,17 @@ class Quantize(nn.Module):
         x = x.permute(0, 2, 3, 1)
 
         # funky stuff in
-        bs, hH, _, C = x.size()
-        real_hH = hH // self.size
+        bs, hH, hW, C = x.size()
+        real_hH = hH // self.size[0]
+        real_hW = hW // self.size[1]
 
         # x = x.view(bs, real_hH, self.size, real_hH, self.size, C).transpose(2,3).contiguous()
-        x = x.view(bs, real_hH, self.size, -1, self.size, C).transpose(2,3).contiguous()
+        x = x.view(bs, real_hH, self.size[0], real_hW, self.size[1], C).transpose(2,3).contiguous()
 
         # funky stuff out
         #x = x.transpose(3,2).reshape(bs, hH, hH, C)
 
-        flatten = x.reshape(-1, self.size, self.size, self.dim)
+        flatten = x.reshape(-1, *self.size, self.dim)
         # Dist: squared-L2(p,q) = ||p||^2 + ||q||^2 - 2pq
 
         flatten = flatten.view(flatten.size(0), -1)
@@ -90,7 +94,7 @@ class Quantize(nn.Module):
                 1 - self.decay, embed_onehot.sum(0)
             )
             embed_sum = flatten.transpose(0, 1) @ embed_onehot
-            self.embed_avg.data.mul_(decay).add_(1 - decay, embed_sum.view(self.size, self.size, self.dim, self.num_embeddings))
+            self.embed_avg.data.mul_(decay).add_(1 - decay, embed_sum.view(*self.size, self.dim, self.num_embeddings))
             n = self.cluster_size.sum()
             cluster_size = (
                 (self.cluster_size + self.eps) / (n + self.num_embeddings * self.eps) * n
@@ -120,10 +124,11 @@ class Quantize(nn.Module):
 
 
     def idx_2_hid(self, indices):
-        out = self.embed_code(indices) # bs, H, W, s, s, C
-        if self.size > 1:
-            bs, H, C = out.size(0), self.size * out.size(1), out.size(-1)
-            out = out.transpose(3, 2).reshape(bs, H, H, C)
+        out = self.embed_code(indices) # bs, H, W, s1, s2, C
+        bs, hHs, hWs, _, _, C = out.shape
+        if max(self.size) > 1:
+            # out = out.transpose(3, 2).reshape(bs, H, H, C)
+            out = out.transpose(3, 2).reshape(bs, hHs * self.size[0], hWs * self.size[1], C)
         else:
             out = out.squeeze(-2).squeeze(-2)
 
