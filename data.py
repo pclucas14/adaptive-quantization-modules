@@ -44,7 +44,7 @@ class XYDataset(torch.utils.data.Dataset):
 """ Template Dataset for Continual Learning """
 class CLDataLoader(object):
     def __init__(self, datasets_per_task, args, train=True):
-        bs = args.batch_size if train else 256
+        bs = args.batch_size if train else 32 #256
 
         self.datasets = datasets_per_task
         self.loaders = [
