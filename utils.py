@@ -19,8 +19,9 @@ class RALog():
         self.reset()
 
     def reset(self):
-        self.storage = OD()
-        self.count   = OD()
+        self.storage  = OD()
+        self.count    = OD()
+        self.per_task = OD()
 
     def one_liner(self):
         fill = lambda x, y : (x + ' ' * max(0, y - len(x)))[-y:]
@@ -29,12 +30,13 @@ class RALog():
             out += fill(key, 10) + '{:.4f}\t'.format(value)
         return out
 
-    def log(self, key, value):
+    def log(self, key, value, per_task=True):
         if 'tensor' in str(type(value)).lower(): value = value.item()
 
         if key not in self.storage.keys():
             self.count[key] = 1
             self.storage[key] = value
+            self.per_task[key] = per_task
         else:
             prev = self.storage[key]
             cnt  = self.count[key]
