@@ -22,7 +22,7 @@ Mean = lambda x : sum(x) / len(x)
 rescale_inv = (lambda x : x * 0.5 + 0.5)
 
 # spawn writer
-log_dir    = join('runs_2', args.model_name)
+log_dir    = join('runs', args.model_name)
 sample_dir = join(log_dir, 'samples')
 writer     = SummaryWriter(log_dir=log_dir)
 
@@ -48,7 +48,7 @@ def eval(name, max_task=-1):
                 data, target = data.to(args.device), target.to(args.device)
                 outs  = generator.all_levels_recon(data)
 
-            generator.log(prefix='%s---task---%d' % (name, task_t), writer=writer, should_print=True)
+            generator.log(task_t, writer=writer, should_print=True, mode=name)
 
         if max_task >= 0:
             outs += [data]
@@ -93,7 +93,7 @@ def eval_drift(real_img, indices):
 
                 # log the reconstruction error for every block
                 loss_i = F.mse_loss(old_recons[i], real_data)
-                block.log.log('%d-recon-drift' % block.id, loss_i)
+                block.log.log('B%d-Full_recon-drift' % block.id, loss_i)
 
                 # log the relative change in argmin indices
                 cnt, total = 0., 0.
@@ -101,9 +101,9 @@ def eval_drift(real_img, indices):
                     cnt   += (old_idx_ij != new_idx_ij).sum().item()
                     total += old_idx_ij.numel()
 
-                block.log.log('%d-idx-drift' % block.id, cnt / total)
+                block.log.log('B%d-idx-drift' % block.id, cnt / total)
 
-            generator.log(prefix='task---%d---' % task_t, writer=writer, should_print=True)
+            generator.log(task_t, writer=writer, should_print=True, mode='buffer')
 
 
 
@@ -120,7 +120,7 @@ if args.optimization == 'global':
     #     (actually that was when recon was only on topmost (RGB)
     # --> actually it comes down to the same comp graph as blockwise opt.
 else:
-    kwargs = {}
+    kwargs = {'all_levels_recon':True}
 
 for run in range(1): #args.n_runs):
 
@@ -140,7 +140,7 @@ for run in range(1): #args.n_runs):
     # fetch model and ship to GPU
     generator  = QStack(args).to(args.device)
 
-    buffer = Buffer(args)
+    buffer = Buffer(args.mem_size, args.data_size, args.n_classes, dtype=torch.FloatTensor)
 
     print("number of generator  parameters:", sum([np.prod(p.size()) for p \
             in generator.parameters()]))
@@ -152,31 +152,32 @@ for run in range(1): #args.n_runs):
             sample_amt = 0
 
             for i, (input_x, input_y) in enumerate(tr_loader):
-                if i % 5 == 0 : print('  ', i, ' / ', len(tr_loader)) #, end='\r')
-                if sample_amt > args.samples_per_task > 0: break
+                if i % 5 == 0 : print('  ', i, ' / ', len(tr_loader) , end='\r')
                 sample_amt += input_x.size(0)
 
-                input_x, input_y = input_x.to(args.device), input_y.to(args.device)
+                input_x, input_y = input_x.to(args.device), input_y.to(args.device).squeeze(1)
+                if sample_amt > args.samples_per_task > 0: break
 
                 for _ in range(args.n_iters):
 
                     if task > 0 and args.rehearsal:
                         # TODO: make this layer agnostic
                         re_x, re_y     = buffer.sample(input_x.size(0))
-                        re_x           = prev_gen.blocks[0].decoder(prev_gen.blocks[0].idx_2_hid([re_x]))
+                        #re_x           = prev_gen.blocks[0].decoder(prev_gen.blocks[0].idx_2_hid([re_x]))
                         data_x, data_y = torch.cat((input_x, re_x)), torch.cat((input_y, re_y))
                     else:
                         data_x, data_y = input_x, input_y
 
-                    # generator
-                    out = generator(data_x, **kwargs)
+                    out = generator(data_x,    **kwargs)
                     generator.optimize(data_x, **kwargs)
 
                 if (i + 1) % 30 == 0:
-                    generator.log(prefix='Train task %d---' % task, writer=writer, should_print=True)
+                    generator.log(task, writer=writer, should_print=True, mode='train')
 
-                if i > 200:
-                    buffer.add_reservoir(generator.fetch_indices()[-1][0][:input_x.size(0)], input_y, task)
+                # import pdb; pdb.set_trace()
+                if False: #i > 200:
+                    #buffer.add_reservoir(generator.fetch_indices()[-1][0][:input_x.size(0)], input_y, task)
+                    buffer.add_reservoir(input_x, input_y, task)
 
         generator.eval()
         generator(input_x)
@@ -195,7 +196,6 @@ for run in range(1): #args.n_runs):
                     new_indices += [generator.fetch_indices()]
 
                 drift_indices = new_indices
-
 
             # TODO: put this back
             # eval_drift(drift_images, drift_indices)
