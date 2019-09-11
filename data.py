@@ -340,12 +340,12 @@ def get_miniimagenet(args):
     ROOT_PATH = '/mnt/data/lpagec/imagenet/imagenet_images'
     ROOT_PATH_CSV = '../prototypical-network-pytorch/materials'
 
-    size = args.data_size
+    size = args.data_size[-1]
     args.n_tasks   = 20
     args.n_classes = 100
     args.multiple_heads = True
     args.n_classes_per_task = 5
-    args.input_size = (3, size, size)
+    args.input_size = args.data_size
 
     def get_data(setname):
         csv_path = os.path.join(ROOT_PATH_CSV, setname + '.csv')
