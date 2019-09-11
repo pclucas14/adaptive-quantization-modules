@@ -50,7 +50,7 @@ def get_global_args(arglist):
             help='Location of data (will download data if does not exist)')
     add('--dataset', type=str, default='split_cifar10',
             help='Dataset name')
-    add('--data_size', type=int, nargs='+', default=(128, 128, 3),
+    add('--data_size', type=int, nargs='+', default=(3, 128, 128),
             help='height / width of the input. Note that only Imagenet supports this')
     add('--batch_size', type=int, default=10)
     add('--max_iterations', type=int, default=None,
@@ -118,21 +118,21 @@ def get_args():
     assert len(layer_flags) == global_args.num_blocks
 
     # we want to know what the compression factor is at every level
-    current_shape = global_args.data_size[:2] # e.g. (128, 128)
+    current_shape = global_args.data_size[1:] # e.g. (128, 128)
 
     # specify remaining args
     for i in range(global_args.num_blocks):
         input_size = global_args.data_size[0] if i == 0 else global_args.layers[i-1].enc_height
 
         # original code had `i` instead of `i+1` for `global_args` index (I think the latter is correct)
-        input_channels = global_args.data_size[-1] if i == 0 else global_args.layers[i - 1].embed_dim
+        input_channels = global_args.data_size[0] if i == 0 else global_args.layers[i - 1].embed_dim
         global_args.layers[i].in_channel = global_args.layers[i].out_channel = input_channels
 
 
         ''' stride '''
         stride = global_args.layers[i].stride
-        if type(stride) == int:
-            stride = (stride, stride)
+        if len(stride) == 1:
+            stride = stride * 2
             global_args.layers[i].stride = stride
 
 
