@@ -46,7 +46,7 @@ def eval(name, max_task=-1):
 
             for data, target in te_loader:
                 data, target = data.to(args.device), target.to(args.device)
-                outs  = generator.all_levels_recon(data)
+                outs  = generator.reconstruct_all_levels(data)
 
             generator.log(task_t, writer=writer, should_print=True, mode=name)
 
@@ -140,8 +140,6 @@ for run in range(1): #args.n_runs):
     # fetch model and ship to GPU
     generator  = QStack(args).to(args.device)
 
-    buffer = Buffer(args.mem_size, args.data_size, args.n_classes, dtype=torch.FloatTensor)
-
     print("number of generator  parameters:", sum([np.prod(p.size()) for p \
             in generator.parameters()]))
 
@@ -155,15 +153,14 @@ for run in range(1): #args.n_runs):
                 if i % 5 == 0 : print('  ', i, ' / ', len(tr_loader) , end='\r')
                 sample_amt += input_x.size(0)
 
-                input_x, input_y = input_x.to(args.device), input_y.to(args.device).squeeze(1)
+                input_x, input_y = input_x.to(args.device), input_y.to(args.device)
                 if sample_amt > args.samples_per_task > 0: break
 
                 for _ in range(args.n_iters):
 
                     if task > 0 and args.rehearsal:
                         # TODO: make this layer agnostic
-                        re_x, re_y     = buffer.sample(input_x.size(0))
-                        #re_x           = prev_gen.blocks[0].decoder(prev_gen.blocks[0].idx_2_hid([re_x]))
+                        re_x, re_y     = generator.sample_from_buffer(input_x.size(0))
                         data_x, data_y = torch.cat((input_x, re_x)), torch.cat((input_y, re_y))
                     else:
                         data_x, data_y = input_x, input_y
@@ -174,10 +171,8 @@ for run in range(1): #args.n_runs):
                 if (i + 1) % 30 == 0:
                     generator.log(task, writer=writer, should_print=True, mode='train')
 
-                # import pdb; pdb.set_trace()
-                if False: #i > 200:
-                    #buffer.add_reservoir(generator.fetch_indices()[-1][0][:input_x.size(0)], input_y, task)
-                    buffer.add_reservoir(input_x, input_y, task)
+                if args.rehearsal:
+                    generator.add_reservoir(input_x, input_y, task)
 
         generator.eval()
         generator(input_x)
@@ -198,7 +193,7 @@ for run in range(1): #args.n_runs):
                 drift_indices = new_indices
 
             # TODO: put this back
-            # eval_drift(drift_images, drift_indices)
+            eval_drift(drift_images, drift_indices)
 
         # store the last minibatch
         drift_images  += [to_be_added[0]]
