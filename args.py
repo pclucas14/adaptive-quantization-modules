@@ -109,6 +109,7 @@ def get_args():
         layer_args.rehearsal    = global_args.rehearsal
         layer_args.mem_size     = global_args.mem_size
         layer_args.n_classes    = global_args.n_classes
+        layer_args.data_size    = global_args.data_size
 
         # make sure layer does not exist yet
         assert layer_no not in global_args.layers.keys()
