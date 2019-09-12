@@ -47,6 +47,78 @@ class QLayer(nn.Module):
         self.register_parameter('dec_log_stdv', \
                 torch.nn.Parameter(torch.Tensor([0.])))
 
+        if args.rehearsal:
+            self.n_samples = 0
+            self.n_memory  = 0
+            self.mem_per_sample = 0
+            self.comp_rate   = args.comp_rate
+
+            buffers = []
+            for shp in self.args.argmin_shapes:
+                buffers += [Buffer(shp, args.n_classes, dtype=torch.LongTensor)]
+                self.mem_per_sample += buffers[-1].mem_per_sample
+
+            self.buffer = nn.ModuleList(buffers)
+
+            assert self.mem_per_sample == np.prod(args.data_size) / self.comp_rate
+
+
+    def add_to_buffer(self, argmins, y, t, idx=None):
+        """ adds indices to layer buffer """
+
+        assert len(argmins) == len(self.buffer)
+        n_memory = 0
+
+        if idx is None:
+            idx = torch.ones_like(y)
+
+        # TODO: MUST ENSURE THAT THE BUFFER SHUFFLING IS THE SAME ACROSS BUFFER
+        swap_idx = torch.randperm(int(self.n_samples))[:(idx == 1).sum()]
+
+        for argmin, buffer in zip(argmins, self.buffer):
+            # it's possible some samples in the batch were added in full res.
+            # we therefore take them out
+            argmin = argmin[-y.size(0):]
+            buffer.add(argmin[idx], y[idx], t, swap_idx)
+
+            n_memory += buffer.n_memory
+
+        self.n_samples += idx.sum()
+        self.n_memory = n_memory
+
+
+    def rem_from_buffer(self, n_samples):
+        """ only adding this header cuz all other methods have one """
+
+        n_memory = 0
+
+        for buffer in self.buffer:
+            buffer.free(n_samples)
+            n_memory += buffer.n_memory
+
+        self.n_samples -= int(n_samples)
+        assert self.n_samples == self.buffer[-1].n_samples
+
+        self.n_memory = n_memory
+
+
+    def sample_from_buffer(self, n_samples):
+        """ only adding this header cuz all other methods have one """
+
+        n_samples = int(n_samples)
+
+        idx = torch.randperm(self.n_samples)[:n_samples]
+
+        for i, (qt, buffer) in enumerate(zip(self.quantize, self.buffer)):
+            if i == 0:
+                out_x = [qt.idx_2_hid(buffer.bx[idx])]
+                out_y = buffer.by[idx]
+            else:
+                out_x += [qt.idx_2_hid(buffer.bx[idx])]
+                assert (out_y - buffer.by[idx]).abs().sum() == 0
+
+        return torch.cat(out_x, 1), out_y
+
 
     def idx_2_hid(self, indices):
         """ fetch latent representation from indices """
@@ -99,16 +171,18 @@ class QLayer(nn.Module):
     def down(self, x, **kwargs):
         """ Decoding Process """
 
+        '''
         # you have two options here. You can either use as input
         # 1) the output of the stream from the bottom block
         # 2) the output of the quantizer from the same block
 
-        '''
+        # The code below was removed; better handled in Q_stack
         if kwargs.get('inter_level_stream', False):
             self.output = self.decoder(x)           # option 1
         else:
             self.output = self.decoder(self.z_q)    # option 2
         '''
+
         self.output = self.decoder(x)
 
         return self.output
@@ -157,11 +231,177 @@ class QStack(nn.Module):
                     lr=args.global_learning_rate)
 
         if args.rehearsal:
-            self.reg_buffer = Buffer(args.mem_size, args.data_size, \
+            mem_size  = args.mem_size * np.prod(args.data_size)
+            mem_size -= sum(p.numel() for p in self.parameters())
+
+            self.mem_size = mem_size    # total floats that can be stored across all blocks
+            self.n_seen_so_far = 0      # number of samples seen so far
+            self.reg_stored = 0         # samples stored in the regular (uncompressed) buffer
+            self.all_stored = 0         # samples stored across all blocks
+            self.mem_used = 0           # total float used across blocks
+            self.data_size = np.prod(args.data_size)
+
+            self.reg_buffer = Buffer(args.data_size, \
                     args.n_classes, dtype=torch.FloatTensor)
 
+            comp_rate = [self.data_size / block.args.comp_rate for block in self.blocks]
+            self.register_buffer('mem_per_block', torch.Tensor([self.data_size] + comp_rate))
 
-    # madd design pattern use. Vybihal and Shashi would be proud
+
+    def sample_from_buffer(self, n_samples):
+        """ something something something """
+
+        # sample proportional to the amounts of points per resolution
+        probs = torch.Tensor([self.reg_stored] + [x.n_samples for x in self.blocks])
+        probs = probs / probs.sum()
+        samples_per_block = (probs * n_samples).floor()
+
+        #TODO: this will throw an error if no samples are stored in full resolution
+        samples_per_block[0] = n_samples - samples_per_block[1:].sum()
+
+        reg_x, reg_y = self.reg_buffer.sample(samples_per_block[0])
+
+        if samples_per_block[0] == n_samples:
+            return reg_x, reg_y
+
+        # we reverse the blocks, so that all the decoding can be done in one pass
+        r_blocks, r_spb = self.blocks[::-1], reversed(samples_per_block[1:])
+
+        i = 0
+        out_y = [reg_y]
+        for (block_samples, block) in zip(r_spb, r_blocks):
+            if block_samples == 0 and i == 0:
+                continue
+
+            xx, yy  = block.sample_from_buffer(block_samples)
+            out_y += [yy]
+
+            if i == 0:
+                out_x = xx
+            else:
+                out_x = torch.cat((out_x, xx))
+
+            out_x = block.decoder(out_x)
+
+            i += 1
+
+        return torch.cat((out_x, reg_x)), torch.cat(out_y)
+
+
+    def add_reservoir(self, x, y, t, **kwargs):
+        """ Reservoir Sampling Buffer Addition """
+
+        mem_free = self.mem_size - self.mem_used
+        can_store_uncompressed = csu = int(min((mem_free) // x[0].numel(), x.size(0)))
+
+        if can_store_uncompressed > 0:
+            self.reg_buffer.add(x[:csu], y[:csu], t, swap_idx=None)
+            x, y = x[csu:], y[csu:]
+
+            # update statistic
+            self.reg_stored += csu
+            self.all_stored += csu
+            self.n_seen_so_far += csu
+            self.mem_used += self.data_size * csu
+
+        if x.size(0) > 0:
+            # in reservoir sampling, samples should be added with
+            # p(amt of samples that fit in mem / samples see so far)
+            indices = torch.FloatTensor(x.size(0)).to(x.device).\
+                    uniform_(0, self.n_seen_so_far).long()
+            valid_indices = (indices < self.all_stored).long()
+
+            # indices of samples to be added in mem
+            # note that this process is independant of the compression rate
+            # which should make things less biased.
+            idx_new_data = valid_indices.nonzero().squeeze(-1)
+
+            # now that we know which samples will be added, we need to check
+            # which rep / compression rate will be used.
+
+            """ only using recon error for now """
+            target = self.all_levels_recon[:, -x.size(0):]
+
+            '''
+            from torchvision.utils import save_image
+            from PIL import Image
+            import pdb; pdb.set_trace()
+            def sho(img):
+                save_image(img * .5 + .5, 'tmp.png')
+                Image.open('tmp.png').show()
+            '''
+
+            # now that we know which samples will be added to the buffer,
+            # we need to find the most compressed representation that is good enough
+            per_block_l1 = (x.unsqueeze(0) - target).abs()
+            per_block_l1 = per_block_l1.mean(dim=(2,3,4))
+            block_id = (per_block_l1 < self.args.recon_th).sum(dim=0)
+
+            # we calculate the amount of space that needs to be freed
+            space_needed = F.one_hot(block_id, len(self.blocks) + 1).float()
+            space_needed = (space_needed * self.mem_per_block).sum()
+
+            # we want the removal of samples in the buffer to be agnostic to the
+            # compression rate. We determine how much to remove from every block
+            # E[removed from b_i] = space_bi_takes / total_space * space_to_be_removed
+            to_be_removed_weights = torch.Tensor([self.mem_used] + [x.n_memory for x in self.blocks])
+            to_be_removed_weights = to_be_removed_weights / to_be_removed_weights.sum()
+
+            tbr_per_block_mem = to_be_removed_weights * space_needed
+            tbr_per_block_n_samples = (tbr_per_block_mem / self.mem_per_block.cpu()).ceil()
+
+            # finally, we iterate over the blocks and add / remove the required samples
+            # 0th block (uncompressed)
+            self.reg_buffer.free(tbr_per_block_n_samples[0])
+            self.reg_buffer.add(x[block_id == 0], y[block_id == 0], t, swap_idx=None)
+
+            # update statistics
+            delta_reg = int((block_id == 0).sum() - tbr_per_block_n_samples[0])
+            self.reg_stored += delta_reg
+            self.all_stored += delta_reg
+            self.mem_used   += delta_reg * self.data_size
+
+            for i, block in enumerate(self.blocks):
+                # free space
+                block.rem_from_buffer(tbr_per_block_n_samples[i + 1])
+
+                # add new points
+                block.add_to_buffer(block.argmins, y, t, idx=(block_id == (i+1)))
+
+                # update statistics
+                sample_delta = int((block_id == (i+1)).sum() - tbr_per_block_n_samples[i + 1])
+                self.all_stored += sample_delta
+                self.mem_used   += sample_delta * block.mem_per_sample
+
+            """ Making sure everything is behaving as expected """
+
+            # update statistic
+            self.n_seen_so_far += idx_new_data.size(0)
+
+            samples_stored, mem_used = 0, 0
+            samples_stored += self.reg_stored
+            mem_used += self.reg_stored * np.prod(self.args.data_size)
+            samples_in_block = [self.reg_stored]
+
+            for block in self.blocks:
+                samples_stored += block.n_samples
+                mem_used += block.n_memory
+                samples_in_block += [block.n_samples]
+                block.log.log('buffer-samples-B%d' % block.id, block.n_samples)
+
+            block.log.log('buffer-mem', self.mem_used)
+
+            import pdb
+            assert samples_stored == self.all_stored, pdb.set_trace()
+            assert mem_used == self.mem_used
+
+            '''
+            print('samples per block ', samples_in_block)
+            print('mem_used ', mem_used)
+            print('samples stored ', samples_stored, '\n')
+            '''
+
+
     def up(self, x, **kwargs):
         """ Encoding process """
 
@@ -187,29 +427,39 @@ class QStack(nn.Module):
         # 1) the output of the stream from the bottom block
         # 2) the output of the quantizer from the same block
         # 3) do both at the same time in one fwd pass
+        # UPDATE: actually always do 3, but whether gradient is like 1 or 2
+        # can be done with a proper detach call
 
         for i, block in enumerate(reversed(self.blocks)):
+            # TODO: figure out what behavior we want here
+            ''''
             if kwargs.get('inter_level_stream', False):
-                input = x                                   # option 2
+                block.z_q = block.z_q.detach()
             else:
-                if kwargs.get('all_levels_recon', False):
-                    # removing deepest block as x == block.z_q for it
-                    if i == 0:
-                        input = x
-                    else:
-                        x = x.detach()
-                        input = torch.cat((x, block.z_q))   # option 3
-                else:
-                    input = block.z_q                       # option 1
+                x = x.detach()
+            '''
+
+            # removing deepest block as x == block.z_q for it
+            if i == 0:
+                input = x                           # option 2
+            else:
+                input = torch.cat((x, block.z_q))   # option 1
 
             x = block.down(input, **kwargs)
 
+        # original batch size
+        n_og_samples = block.z_q.size(0)
+
         # if `all_levels_recon`, returns a tensor of shape
-        # (bs * n_levels, C, H, W). can call `.view(bs, n_levels, ...)
+        # (bs * n_levels, C, H, W). can call `.view(n_levels, bs, ...)
         # to split correctly. Levels are ordered from deepest (top) to bot.
         # i.e. the last one will have the best reconstruction
 
-        return x
+        x = x.view(len(self.blocks), n_og_samples, *x.shape[1:])
+        self.all_levels_recon = x
+
+        # return only the "nicest" one
+        return x[-1]
 
 
     def forward(self, x, **kwargs):
@@ -278,30 +528,11 @@ class QStack(nn.Module):
         return indices
 
 
-    def init_buffers(self):
-        """ create buffers used for experience replay """
-        pass
-
-
-    def add_reservoir(self, x, y, t):
-        """ Reservoir Sampling Buffer Addition """
-
-        if self.rehearsal_level == -1:
-            self.reg_buffer.add_reservoir(x, y, t)
-            return self.reg_buffer.place_left
-        else:
-            ''' assumes `x` has just been push through the network,
-                and that the saved `z_q` will match x               '''
-            self.blocks[self.rehearsal_level].add_reservoir(y, t)
-            return self.blocks.buffers[0].place_left
-
-
-
     def memory_consolidation(self, x_recon, y, t, err):
         """ Adds data from the new task in the buffers """
 
 
-    def all_levels_recon(self, og, **kwargs):
+    def reconstruct_all_levels(self, og, **kwargs):
         """ Expand all levels to input space to evaluate reconstruction """
 
         # encode
@@ -388,23 +619,10 @@ class QStack(nn.Module):
 
 
 if __name__ == '__main__':
-    # import pdb; pdb.set_trace()
     import args
-    import pdb; pdb.set_trace()
     model = QStack(args.get_debug_args())
     model.eval()
 
     x= torch.FloatTensor(16, 3, 128, 128).normal_()
     outs = model.all_levels_recon(x)
     new  = model.all_levels_recon_new(x)
-
-    '''
-    block = model.blocks[0]
-    idx = torch.FloatTensor(17, 64, 64).uniform_(0, 21).long()
-    xx = block.idx_2_hid([idx])
-
-    idx = [[idx], [idx[:, :16, :16], idx[:, :32, :32]]]
-    outs = model.decode_indices(idx[::-1])
-    import pdb; pdb.set_trace()
-    xx = 1
-    '''
