@@ -27,7 +27,7 @@ class RALog():
         fill = lambda x, y : (x + ' ' * max(0, y - len(x)))[-y:]
         out = ''
         for key, value in self.storage.items():
-            out += fill(key, 10) + '{:.4f}\t'.format(value)
+            out += fill(key, 25) + '{:.4f}\t'.format(value)
         return out
 
     def log(self, key, value, per_task=True):
