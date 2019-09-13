@@ -91,13 +91,15 @@ class QLayer(nn.Module):
         """ only adding this header cuz all other methods have one """
 
         n_memory = 0
+        import pdb
 
         for buffer in self.buffer:
             buffer.free(n_samples)
             n_memory += buffer.n_memory
 
         self.n_samples -= int(n_samples)
-        assert self.n_samples == self.buffer[-1].n_samples
+        assert self.n_samples == self.buffer[-1].n_samples \
+                == self.buffer[-1].bx.size(0), pdb.set_trace()
 
         self.n_memory = n_memory
 
@@ -292,6 +294,10 @@ class QStack(nn.Module):
         """ Reservoir Sampling Buffer Addition """
 
         mem_free = self.mem_size - self.mem_used
+
+        # THIS PART ADDS UNCOMPRESSED REPRESENTATION USING THE FREE MEMORY
+        # UNCOMMENT ALSO TODO 2 if activating this block
+        '''
         can_store_uncompressed = csu = int(min((mem_free) // x[0].numel(), x.size(0)))
 
         if can_store_uncompressed > 0:
@@ -303,6 +309,7 @@ class QStack(nn.Module):
             self.all_stored += csu
             self.n_seen_so_far += csu
             self.mem_used += self.data_size * csu
+        '''
 
         if x.size(0) > 0:
             # in reservoir sampling, samples should be added with
@@ -320,16 +327,7 @@ class QStack(nn.Module):
             # which rep / compression rate will be used.
 
             """ only using recon error for now """
-            target = self.all_levels_recon[:, -x.size(0):]
-
-            '''
-            from torchvision.utils import save_image
-            from PIL import Image
-            import pdb; pdb.set_trace()
-            def sho(img):
-                save_image(img * .5 + .5, 'tmp.png')
-                Image.open('tmp.png').show()
-            '''
+            target = self.all_levels_recon[:, :x.size(0)]
 
             # now that we know which samples will be added to the buffer,
             # we need to find the most compressed representation that is good enough
@@ -341,6 +339,10 @@ class QStack(nn.Module):
             space_needed = F.one_hot(block_id, len(self.blocks) + 1).float()
             space_needed = (space_needed * self.mem_per_block).sum()
 
+            # remove the one that's already free
+            # TODO 2
+            space_needed = (space_needed - mem_free).clamp_(min=0.)
+
             # we want the removal of samples in the buffer to be agnostic to the
             # compression rate. We determine how much to remove from every block
             # E[removed from b_i] = space_bi_takes / total_space * space_to_be_removed
@@ -349,6 +351,9 @@ class QStack(nn.Module):
 
             tbr_per_block_mem = to_be_removed_weights * space_needed
             tbr_per_block_n_samples = (tbr_per_block_mem / self.mem_per_block.cpu()).ceil()
+
+            # if nothing needs to be deleted, this tensor will be `nan`. This is a simple fix
+            tbr_per_block_n_samples[tbr_per_block_n_samples != tbr_per_block_n_samples] = 0.
 
             # finally, we iterate over the blocks and add / remove the required samples
             # 0th block (uncompressed)
@@ -366,7 +371,6 @@ class QStack(nn.Module):
                 block.rem_from_buffer(tbr_per_block_n_samples[i + 1])
 
                 # add new points
-                import pdb; pdb.set_trace()
                 block.add_to_buffer(block.argmins, y, t, idx=(block_id == (i+1)))
 
                 # update statistics
