@@ -366,6 +366,7 @@ class QStack(nn.Module):
                 block.rem_from_buffer(tbr_per_block_n_samples[i + 1])
 
                 # add new points
+                import pdb; pdb.set_trace()
                 block.add_to_buffer(block.argmins, y, t, idx=(block_id == (i+1)))
 
                 # update statistics
@@ -387,9 +388,10 @@ class QStack(nn.Module):
                 samples_stored += block.n_samples
                 mem_used += block.n_memory
                 samples_in_block += [block.n_samples]
-                block.log.log('buffer-samples-B%d' % block.id, block.n_samples)
+                block.log.log('buffer-samples-B%d' % block.id, block.n_samples, per_task=False)
 
-            block.log.log('buffer-mem', self.mem_used)
+            block.log.log('buffer_samples-reg', self.reg_stored, per_task=False)
+            block.log.log('buffer-mem', self.mem_used, per_task=False)
 
             import pdb
             assert samples_stored == self.all_stored, pdb.set_trace()
