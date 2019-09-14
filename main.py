@@ -168,7 +168,7 @@ for run in range(1): #args.n_runs):
                     out = generator(data_x,    **kwargs)
                     generator.optimize(data_x, **kwargs)
 
-                if (i + 1) % 30 == 0:
+                if (i + 1) % 60 == 0 or (i+1) == len(tr_loader):
                     generator.log(task, writer=writer, should_print=True, mode='train')
 
                 if args.rehearsal:
@@ -177,6 +177,9 @@ for run in range(1): #args.n_runs):
         generator.eval()
         generator(input_x)
         to_be_added = (input_x, generator.fetch_indices())
+
+        buffer_sample = generator.sample_from_buffer(64)[0]
+        save_image(rescale_inv(buffer_sample), 'samples/buffer_%d.png' % task, nrow=8)
 
         if task > 0:
             if args.update_representations:

@@ -65,6 +65,8 @@ class Buffer(nn.Module):
 
     def free(self, n_samples):
         """ free buffer space. Assumes data is shuffled when added"""
+        if n_samples == 0:
+            return
 
         n_samples = int(n_samples)
         import pdb
