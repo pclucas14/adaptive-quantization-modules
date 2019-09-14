@@ -337,8 +337,8 @@ def get_split_cifar100(args):
     return train_ds, valid_ds, test_ds
 
 def get_miniimagenet(args):
-    ROOT_PATH = '/mnt/data/lpagec/imagenet/imagenet_images'
-    ROOT_PATH_CSV = '../prototypical-network-pytorch/materials'
+    ROOT_PATH = '/home/eugene/data/filelists/miniImagenet/materials/images'
+    ROOT_PATH_CSV = '/home/eugene/data/filelists/miniImagenet/materials'
 
     size = args.data_size[-1]
     args.n_tasks   = 20

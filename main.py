@@ -200,7 +200,12 @@ for run in range(1): #args.n_runs):
         drift_indices += [to_be_added[1]]
 
         if args.rehearsal or args.update_representations:
-            prev_gen = deepcopy(generator)
+            argtemp = deepcopy(args)
+            argtemp.rehearsal=False
+            for kk,bloc in enumerate(generator.blocks):
+                argtemp.layers[kk].rehearsal = False
+            prev_gen = QStack(argtemp).to(args.device)
+            prev_gen.load_state_dict(deepcopy(generator.state_dict()),strict=False)
 
         # evaluate on valid set
         eval('valid', max_task=task)
