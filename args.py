@@ -62,6 +62,8 @@ def get_global_args(arglist):
     # new ones
     add('--global_learning_rate', type=float, default=1e-4)
     add('--optimization', type=str, default='blockwise', choices=['blockwise', 'global'])
+    add('--name', type=str, default='basic')
+
     add('--num_blocks', type=int, default=1, help='number of QLayers in QStack')
 
     add('--xyz', action='store_true', help='if True, xyz coordinates are used instead of polar')
@@ -78,7 +80,7 @@ def get_global_args(arglist):
     add('--update_representations', type=int, default=1)
     add('--rehearsal', type=int, default=1)
     add('--mem_size', type=int, default=600)
-    add('--n_classes', type=int, default=1)
+    add('--n_classes', type=int, default=100)
 
     args = parser.parse_args(arglist)
 
