@@ -27,11 +27,19 @@ class RALog():
         fill = lambda x, y : (x + ' ' * max(0, y - len(x)))[-y:]
         out = ''
         for key, value in self.storage.items():
-            out += fill(key, 25) + '{:.4f}\t'.format(value)
+            out += fill(key, 25)
+            if type(value) == np.ndarray:
+                out += str(value[:np.argwhere(value == 0)[0][0]])
+            else:
+                out += '{:.4f}\t'.format(value)
         return out
 
     def log(self, key, value, per_task=True):
-        if 'tensor' in str(type(value)).lower(): value = value.item()
+        if 'tensor' in str(type(value)).lower():
+            if value.numel() == 1:
+                value = value.item()
+            else:
+                value = value.cpu().data.numpy()
 
         if key not in self.storage.keys():
             self.count[key] = 1
