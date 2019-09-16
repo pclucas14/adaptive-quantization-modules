@@ -48,8 +48,6 @@ class QLayer(nn.Module):
                 torch.nn.Parameter(torch.Tensor([0.])))
 
         if args.rehearsal:
-            self.n_samples = 0
-            self.n_memory  = 0
             self.mem_per_sample = 0
             self.comp_rate   = args.comp_rate
 
@@ -60,19 +58,41 @@ class QLayer(nn.Module):
 
             self.buffer = nn.ModuleList(buffers)
 
+            # same for now
+            self.old_quantize = self.quantize
+            self.old_decoder  = self.decoder
+
             assert self.mem_per_sample == np.prod(args.data_size) / self.comp_rate
+
+
+    @property
+    def n_samples(self):
+        return self.buffer[0].n_samples
+
+
+    @property
+    def n_memory(self):
+        return sum([buffer.n_memory for buffer in self.buffer])
+
+
+    def update_old_decoder(self):
+        """ updates the stale decoder weights with the new ones """
+
+        self.old_decoder   = deepcopy(self.decoder)
+        self.old_quantize  = deepcopy(self.quantize)
+        self.old_decoder.training = self.old_quantize.training = False
 
 
     def add_to_buffer(self, argmins, y, t, idx=None):
         """ adds indices to layer buffer """
 
         assert len(argmins) == len(self.buffer)
-        n_memory = 0
 
         if idx is None:
             idx = torch.ones_like(y)
 
         # TODO: MUST ENSURE THAT THE BUFFER SHUFFLING IS THE SAME ACROSS BUFFER
+        # id is off by one. TODO: fix.
         swap_idx = torch.randperm(int(self.n_samples))[:(idx == 1).sum()]
 
         for argmin, buffer in zip(argmins, self.buffer):
@@ -81,27 +101,54 @@ class QLayer(nn.Module):
             argmin = argmin[-y.size(0):]
             buffer.add(argmin[idx], y[idx], t, swap_idx)
 
-            n_memory += buffer.n_memory
 
-        self.n_samples += idx.sum()
-        self.n_memory = n_memory
-
-
-    def rem_from_buffer(self, n_samples):
+    def rem_from_buffer(self, n_samples=None, idx=None):
         """ only adding this header cuz all other methods have one """
 
-        n_memory = 0
         import pdb
 
         for buffer in self.buffer:
-            buffer.free(n_samples)
-            n_memory += buffer.n_memory
+            buffer.free(n_samples, idx=idx)
 
-        self.n_samples -= int(n_samples)
-        assert self.n_samples == self.buffer[-1].n_samples \
+        if idx is not None:
+            assert n_samples is None
+            n_samples = idx.size(0)
+
+        assert self.n_samples == self.buffer[0].n_samples \
                 == self.buffer[-1].bx.size(0), pdb.set_trace()
 
-        self.n_memory = n_memory
+
+    def add_argmins(self, y, t, argmin_idx=None, last_n=None):
+        """ adds new representations to the buffer.
+            made to be used with `update_buffer_idx` """
+
+        # note: these arguments should always be passed, at least for now
+        assert argmin_idx is not None and last_n is not None
+
+        swap_idx = torch.randperm(int(self.n_samples))[:y.size(0)]
+
+        for argmin, buffer in zip(self.argmins, self.buffer):
+            if last_n is not None:
+                argmin = argmin[-last_n:]
+            if argmin_idx is not None:
+                argmin = argmin[argmin_idx]
+
+            buffer.add(argmin, y, t, swap_idx)
+
+
+    def update_buffer(self, buffer_idx, argmin_idx=None, last_n=None):
+        """ update the latent indices stored in the buffer """
+
+        # note: these arguments should always be passed, at least for now
+        assert argmin_idx is not None and last_n is not None
+
+        for argmin, buffer in zip(self.argmins, self.buffer):
+            if last_n is not None:
+                argmin = argmin[-last_n:]
+            if argmin_idx is not None:
+                argmin = argmin[argmin_idx]
+
+            buffer.update(buffer_idx, argmin)
 
 
     def sample_from_buffer(self, n_samples):
@@ -110,16 +157,23 @@ class QLayer(nn.Module):
         n_samples = int(n_samples)
 
         idx = torch.randperm(self.n_samples)[:n_samples]
+        self.sampled_indices = idx
 
-        for i, (qt, buffer) in enumerate(zip(self.quantize, self.buffer)):
+        # store the last sampled indices for a potential update
+        self.sampled_idx = idx
+
+        #for i, (qt, buffer) in enumerate(zip(self.quantize, self.buffer)):
+        for i, (qt, buffer) in enumerate(zip(self.old_quantize, self.buffer)):
             if i == 0:
                 out_x = [qt.idx_2_hid(buffer.bx[idx])]
                 out_y = buffer.by[idx]
+                out_t = buffer.bt[idx]
             else:
                 out_x += [qt.idx_2_hid(buffer.bx[idx])]
                 assert (out_y - buffer.by[idx]).abs().sum() == 0
+                assert (out_t - buffer.bt[idx]).abs().sum() == 0
 
-        return torch.cat(out_x, 1), out_y
+        return torch.cat(out_x, 1), out_y, out_t
 
 
     def idx_2_hid(self, indices):
@@ -161,29 +215,21 @@ class QLayer(nn.Module):
         self.diffs   = diffs
         self.argmins = argmins
 
+        '''
         if not kwargs.get('no_log', False):
             # store as scalars for convenience
             for i in range(len(self.diffs)):
                 self.log.log('ppl-B%d-C%d'  % (self.id, i), self.ppls[i],  per_task=False)
                 self.log.log('diff-B%d-C%d' % (self.id, i), self.diffs[i], per_task=False)
-
+        '''
         return z_q
 
 
     def down(self, x, **kwargs):
         """ Decoding Process """
 
-        '''
-        # you have two options here. You can either use as input
-        # 1) the output of the stream from the bottom block
-        # 2) the output of the quantizer from the same block
-
-        # The code below was removed; better handled in Q_stack
-        if kwargs.get('inter_level_stream', False):
-            self.output = self.decoder(x)           # option 1
-        else:
-            self.output = self.decoder(self.z_q)    # option 2
-        '''
+        if kwargs.get('old_decoder', False):
+            return self.old_decoder(x)
 
         self.output = self.decoder(x)
 
@@ -198,13 +244,14 @@ class QLayer(nn.Module):
 
         # TODO: should we weight these differently ?
         diffs = sum(self.diffs) / len(self.diffs)
-        #recon = F.mse_loss(self.output, target)
-        recon = F.l1_loss(self.output, target)
+        recon = F.mse_loss(self.output, target)
+        #recon = F.l1_loss(self.output, target)
 
         self.recon = recon.item()
         if not kwargs.get('no_log', False):
             # during eval we actually perform a complete log, so no need for per-task here
-            self.log.log('Distill_recon-B%d' % self.id, self.recon, per_task=False)
+            #self.log.log('Distill_recon-B%d' % self.id, self.recon, per_task=False)
+            pass
 
         return recon, diffs
 
@@ -238,10 +285,14 @@ class QStack(nn.Module):
 
             self.mem_size = mem_size    # total floats that can be stored across all blocks
             self.n_seen_so_far = 0      # number of samples seen so far
-            self.reg_stored = 0         # samples stored in the regular (uncompressed) buffer
-            self.all_stored = 0         # samples stored across all blocks
-            self.mem_used = 0           # total float used across blocks
+
+            self.all_stored_ = 0        # samples stored across all blocks
+            self.mem_used_   = 0        # total float used across blocks
+
             self.data_size = np.prod(args.data_size)
+
+            # whether we need to recompute the buffer statistics
+            self.up_to_date_mu = self.up_to_date_as  = True
 
             self.reg_buffer = Buffer(args.data_size, \
                     args.n_classes, dtype=torch.FloatTensor)
@@ -250,8 +301,99 @@ class QStack(nn.Module):
             self.register_buffer('mem_per_block', torch.Tensor([self.data_size] + comp_rate))
 
 
+    @property
+    def all_stored(self):
+        if self.up_to_date_as:
+            return self.all_stored_
+
+        total = self.reg_buffer.n_samples
+
+        for block in self.blocks:
+            total += block.n_samples
+
+        self.all_stored_ = total
+        self.up_to_date_as = True
+
+        return total
+
+
+    @property
+    def mem_used(self):
+        if self.up_to_date_mu:
+            return self.mem_used_
+
+        total = self.reg_buffer.n_memory
+
+        for block in self.blocks:
+            total += block.n_memory
+
+        self.mem_used_ = total
+        self.up_to_date_mu = True
+
+        return total
+
+
+    @property
+    def reg_stored(self):
+        return self.reg_buffer.n_samples
+
+
+    def up_to_date(self, value):
+        self.up_to_date_mu = self.up_to_date_as = value
+
+
+    def update_old_decoder(self):
+        """ update the `old decoders` copy for every block """
+
+        for block in self.blocks:
+            block.update_old_decoder()
+
+
+    def buffer_update_idx(self, re_x, re_y, re_t):
+
+        re_target = self.all_levels_recon[:, -re_x.size(0):]
+
+        per_block_l2 = (re_x.unsqueeze(0) - re_target).pow(2)
+        per_block_l2 = per_block_l2.mean(dim=(2,3,4))
+        block_id = (per_block_l2 < self.args.recon_th).sum(dim=0)
+
+        # TODO: build block id when sampling
+        pre_block_id = self.last_block_id.to(block_id.device)
+
+        # take the most compressed rep (biggest block id)
+        new_block_id = torch.stack((block_id, pre_block_id)).max(dim=0)[0]
+
+        # first, delete points from real buffer which will be compressed
+        delete_idx = self.sampled_indices[(pre_block_id == 0) * (new_block_id > 0)]
+        self.reg_buffer.free(idx=delete_idx)
+
+        # Note: nothing to update for real data
+
+        for i, block in enumerate(self.blocks):
+
+            # 1) update stale representations
+            update_mask = (pre_block_id == (i+1)) * (new_block_id == (i+1))
+            update_idx  = self.sampled_indices[update_mask]
+            block.update_buffer(update_idx, argmin_idx=update_mask, last_n=re_x.size(0))
+
+            # 2) delete representations that will be further compressed
+            delete_mask = (pre_block_id == (i+1)) * (new_block_id > (i+1))
+            delete_idx  = self.sampled_indices[delete_mask]
+            block.rem_from_buffer(idx=delete_idx)
+
+            # 3) add new representations
+            add_mask    = (pre_block_id < (i+1))  * (new_block_id == (i+1))
+            block.add_argmins(re_y[add_mask], re_t[add_mask], argmin_idx=add_mask, last_n=re_x.size(0))
+
+        # will need to recompute statistics
+        self.up_to_date(False)
+
+
     def sample_from_buffer(self, n_samples):
         """ something something something """
+
+        # note: the block ids are off by one with block.id :/ i.e. block.id == 0 will be 1 here
+        self.block_id = torch.zeros(n_samples).long()
 
         # sample proportional to the amounts of points per resolution
         probs = torch.Tensor([self.reg_stored] + [x.n_samples for x in self.blocks])
@@ -259,57 +401,71 @@ class QStack(nn.Module):
         samples_per_block = (probs * n_samples).floor()
 
         #TODO: this will throw an error if no samples are stored in full resolution
-        samples_per_block[0] = n_samples - samples_per_block[1:].sum()
+        missing = n_samples - samples_per_block.sum()
+        samples_per_block[samples_per_block.argmax()] += missing
 
-        reg_x, reg_y = self.reg_buffer.sample(samples_per_block[0])
+        # keep track of this to update latent indices
+        self.last_samples_per_block = samples_per_block
+        self.last_block_id = torch.zeros(n_samples).long().fill_(len(self.blocks))
+
+        # TODO: make this more efficient
+        current_sum = 0
+        for i in range(samples_per_block.size(0)):
+            self.last_block_id[:current_sum] -= 1
+            current_sum += int(samples_per_block[i].item())
+
+        import pdb
+        assert samples_per_block[0] <= self.reg_buffer.n_samples, pdb.set_trace()
+
+        reg_x, reg_y, reg_t = self.reg_buffer.sample(samples_per_block[0])
+
+        # keep strack of the sampled indices
+        self.sampled_indices = []
 
         if samples_per_block[0] == n_samples:
-            return reg_x, reg_y
+            self.sampled_indices = self.reg_buffer.sampled_indices
+            return reg_x, reg_y, reg_t
 
         # we reverse the blocks, so that all the decoding can be done in one pass
         r_blocks, r_spb = self.blocks[::-1], reversed(samples_per_block[1:])
 
         i = 0
         out_y = [reg_y]
+        out_t = [reg_t]
         for (block_samples, block) in zip(r_spb, r_blocks):
             if block_samples == 0 and i == 0:
                 continue
 
-            xx, yy  = block.sample_from_buffer(block_samples)
-            out_y += [yy]
+            xx, yy, tt  = block.sample_from_buffer(block_samples)
+            out_y = [yy] + out_y
+            out_t = [tt] + out_t
+
+            self.sampled_indices = [block.sampled_indices] + self.sampled_indices
 
             if i == 0:
                 out_x = xx
             else:
-                out_x = torch.cat((out_x, xx))
+                out_x = torch.cat((xx, out_x))
 
-            out_x = block.decoder(out_x)
+            #out_x = block.decoder(out_x)
+            out_x = block.old_decoder(out_x)
 
             i += 1
 
-        return torch.cat((out_x, reg_x)), torch.cat(out_y)
+        # TODO: check if should be on CUDA already
+        self.sampled_indices = torch.cat([self.reg_buffer.sampled_indices.cpu()] + \
+                self.sampled_indices)
+
+        # TODO: should be ordered increasingly more compressed
+        return torch.cat((reg_x, out_x)), torch.cat(out_y), torch.cat(out_t)
 
 
     def add_reservoir(self, x, y, t, **kwargs):
         """ Reservoir Sampling Buffer Addition """
 
+        #print(self.reg_buffer.n_samples)
+
         mem_free = self.mem_size - self.mem_used
-
-        # THIS PART ADDS UNCOMPRESSED REPRESENTATION USING THE FREE MEMORY
-        # UNCOMMENT ALSO TODO 2 if activating this block
-        '''
-        can_store_uncompressed = csu = int(min((mem_free) // x[0].numel(), x.size(0)))
-
-        if can_store_uncompressed > 0:
-            self.reg_buffer.add(x[:csu], y[:csu], t, swap_idx=None)
-            x, y = x[csu:], y[csu:]
-
-            # update statistic
-            self.reg_stored += csu
-            self.all_stored += csu
-            self.n_seen_so_far += csu
-            self.mem_used += self.data_size * csu
-        '''
 
         if x.size(0) > 0:
             # in reservoir sampling, samples should be added with
@@ -327,20 +483,24 @@ class QStack(nn.Module):
             # which rep / compression rate will be used.
 
             """ only using recon error for now """
+            # keep in memory the last sampled indices
+            # think about cleanest way to update the stored representations
             target = self.all_levels_recon[:, :x.size(0)]
 
             # now that we know which samples will be added to the buffer,
             # we need to find the most compressed representation that is good enough
-            per_block_l1 = (x.unsqueeze(0) - target).abs()
-            per_block_l1 = per_block_l1.mean(dim=(2,3,4))
-            block_id = (per_block_l1 < self.args.recon_th).sum(dim=0)
+
+            # per_block_l1 = (x.unsqueeze(0) - target).abs()
+            # per_block_l1 = per_block_l1.mean(dim=(2,3,4))
+            # block_id = (per_block_l1 < self.args.recon_th).sum(dim=0)
+
+            per_block_l2 = (x.unsqueeze(0) - target).pow(2)
+            per_block_l2 = per_block_l2.mean(dim=(2,3,4))
+            block_id = (per_block_l2 < self.args.recon_th).sum(dim=0)
 
             # we calculate the amount of space that needs to be freed
             space_needed = F.one_hot(block_id, len(self.blocks) + 1).float()
             space_needed = (space_needed * self.mem_per_block).sum()
-
-            # remove the one that's already free
-            # TODO 2
             space_needed = (space_needed - mem_free).clamp_(min=0.)
 
             # we want the removal of samples in the buffer to be agnostic to the
@@ -355,16 +515,13 @@ class QStack(nn.Module):
             # if nothing needs to be deleted, this tensor will be `nan`. This is a simple fix
             tbr_per_block_n_samples[tbr_per_block_n_samples != tbr_per_block_n_samples] = 0.
 
+            # mark the buffer stats as needing update
+            self.up_to_date(False)
+
             # finally, we iterate over the blocks and add / remove the required samples
             # 0th block (uncompressed)
             self.reg_buffer.free(tbr_per_block_n_samples[0])
             self.reg_buffer.add(x[block_id == 0], y[block_id == 0], t, swap_idx=None)
-
-            # update statistics
-            delta_reg = int((block_id == 0).sum() - tbr_per_block_n_samples[0])
-            self.reg_stored += delta_reg
-            self.all_stored += delta_reg
-            self.mem_used   += delta_reg * self.data_size
 
             for i, block in enumerate(self.blocks):
                 # free space
@@ -373,39 +530,31 @@ class QStack(nn.Module):
                 # add new points
                 block.add_to_buffer(block.argmins, y, t, idx=(block_id == (i+1)))
 
-                # update statistics
-                sample_delta = int((block_id == (i+1)).sum() - tbr_per_block_n_samples[i + 1])
-                self.all_stored += sample_delta
-                self.mem_used   += sample_delta * block.mem_per_sample
-
             """ Making sure everything is behaving as expected """
 
             # update statistic
             self.n_seen_so_far += idx_new_data.size(0)
 
-            samples_stored, mem_used = 0, 0
-            samples_stored += self.reg_stored
-            mem_used += self.reg_stored * np.prod(self.args.data_size)
-            samples_in_block = [self.reg_stored]
-
             for block in self.blocks:
-                samples_stored += block.n_samples
-                mem_used += block.n_memory
-                samples_in_block += [block.n_samples]
                 block.log.log('buffer-samples-B%d' % block.id, block.n_samples, per_task=False)
 
             block.log.log('buffer_samples-reg', self.reg_stored, per_task=False)
             block.log.log('buffer-mem', self.mem_used, per_task=False)
 
-            import pdb
-            assert samples_stored == self.all_stored, pdb.set_trace()
-            assert mem_used == self.mem_used
+            """ Monitor label distribution in buffers """
+            hist = torch.zeros(self.args.n_classes).long()
 
-            '''
-            print('samples per block ', samples_in_block)
-            print('mem_used ', mem_used)
-            print('samples stored ', samples_stored, '\n')
-            '''
+            hist += self.reg_buffer.y.sum(dim=0).cpu()
+
+            # add the labels for all buffer levels
+            for block in self.blocks:
+                if block.n_samples > 0:
+                    hist += block.buffer[0].y.sum(dim=0).cpu()
+
+            hist = hist.float()
+            hist = hist / hist.sum()
+
+            block.log.log('buffer-y-dist', hist, per_task=False)
 
 
     def up(self, x, **kwargs):
@@ -534,10 +683,6 @@ class QStack(nn.Module):
         return indices
 
 
-    def memory_consolidation(self, x_recon, y, t, err):
-        """ Adds data from the new task in the buffers """
-
-
     def reconstruct_all_levels(self, og, **kwargs):
         """ Expand all levels to input space to evaluate reconstruction """
 
@@ -555,6 +700,7 @@ class QStack(nn.Module):
             out_levels += [x]
 
             # log reconstruction error
+            #block.log.log('Full_recon-B%d' % block.id, F.l1_loss(x, og))
             block.log.log('Full_recon-B%d' % block.id, F.mse_loss(x, og))
 
         return out_levels
@@ -571,7 +717,11 @@ class QStack(nn.Module):
                         suffix = '__task' + str(task)
                     else:
                         suffix = ''
-                    writer.add_scalar(prefix + name + suffix, value, self.log_step)
+
+                    if type(value) == np.ndarray:
+                        writer.add_histogram(prefix + name + suffix, value, self.log_step)
+                    else:
+                        writer.add_scalar(prefix + name + suffix, value, self.log_step)
 
             self.log_step += 1
 
