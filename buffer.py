@@ -36,11 +36,15 @@ class Buffer(nn.Module):
     def t(self):
         return self.bt[:self.n_samples]
 
+    def update(self, idx, value):
+        self.bx[idx] = value
+
     def add(self, in_x, in_y, in_t, swap_idx):
         """ concatenate a sample at the end of the buffer """
 
         # convert int `in_t` to long tensor
-        in_t = torch.LongTensor(in_x.size(0)).to(in_x.device).fill_(in_t)
+        if type(in_t) == int:
+            in_t = torch.LongTensor(in_x.size(0)).to(in_x.device).fill_(in_t)
 
         if self.bx.size(0) > in_x.size(0):
             if swap_idx is None:
@@ -63,8 +67,14 @@ class Buffer(nn.Module):
         self.n_memory  += in_x.size(0) * self.mem_per_sample
 
 
-    def free(self, n_samples):
+    def free(self, n_samples=None, idx=None):
         """ free buffer space. Assumes data is shuffled when added"""
+
+        assert n_samples is not None or idx is not None, \
+                'must specify amt of points to remove, or specific idx'
+
+        if n_samples is None: n_samples = idx.size(0)
+
         if n_samples == 0:
             return
 
@@ -72,9 +82,18 @@ class Buffer(nn.Module):
         import pdb
         assert n_samples <= self.n_samples, pdb.set_trace()
 
-        self.bx = self.bx[:-n_samples]
-        self.by = self.by[:-n_samples]
-        self.bt = self.bt[:-n_samples]
+        if idx is not None:
+            idx_to_keep = torch.ones_like(self.by)
+            idx_to_keep[idx] = 0
+            idx_to_keep = idx_to_keep.nonzero().squeeze(1)
+
+            self.bx = self.bx[idx_to_keep]
+            self.by = self.by[idx_to_keep]
+            self.bt = self.bt[idx_to_keep]
+        else:
+            self.bx = self.bx[:-n_samples]
+            self.by = self.by[:-n_samples]
+            self.bt = self.bt[:-n_samples]
 
         self.n_samples -= n_samples
         self.n_memory  -= n_samples * self.mem_per_sample
@@ -85,14 +104,19 @@ class Buffer(nn.Module):
         amt = int(amt)
         if exclude_task is not None:
             valid_indices = (self.t != exclude_task).nonzero().squeeze()
-            bx, by = self.bx[valid_indices], self.by[valid_indices]
+            bx, by, bt = self.bx[valid_indices], self.by[valid_indices], self.bt[valid_indices]
         else:
-            bx, by = self.bx[:self.n_samples], self.by[:self.n_samples]
+            bx, by, bt = self.bx[:self.n_samples], self.by[:self.n_samples], self.bt[:self.n_samples]
 
         if bx.size(0) < amt:
+            import pdb;
+            pdb.set_trace() # should this happen ?
             # return self.bx[:self.n_samples], self.by[:self.n_samples]
             return bx, by
         else:
             indices = torch.from_numpy(np.random.choice(bx.size(0), amt, replace=False)).to(bx.device)
-            return bx[indices], by[indices]
+
+            # TODO: Note make sure `exclude_task` flag is not used
+            self.sampled_indices = indices
+            return bx[indices], by[indices], bt[indices]
 
