@@ -92,6 +92,7 @@ def eval_drift(real_img, indices):
             for i, block in enumerate(reversed(generator.blocks)):
 
                 # log the reconstruction error for every block
+                # loss_i = F.mse_loss(old_recons[i], real_data)
                 loss_i = F.mse_loss(old_recons[i], real_data)
                 block.log.log('B%d-Full_recon-drift' % block.id, loss_i)
 
@@ -156,11 +157,13 @@ for run in range(1): #args.n_runs):
                 input_x, input_y = input_x.to(args.device), input_y.to(args.device)
                 if sample_amt > args.samples_per_task > 0: break
 
-                for _ in range(args.n_iters):
+                if task > 0:
+                    generator.update_old_decoder()
+
+                for n_iter in range(args.n_iters):
 
                     if task > 0 and args.rehearsal:
-                        # TODO: make this layer agnostic
-                        re_x, re_y     = generator.sample_from_buffer(input_x.size(0))
+                        re_x, re_y, re_t = generator.sample_from_buffer(input_x.size(0))
                         data_x, data_y = torch.cat((input_x, re_x)), torch.cat((input_y, re_y))
                     else:
                         data_x, data_y = input_x, input_y
@@ -168,7 +171,11 @@ for run in range(1): #args.n_runs):
                     out = generator(data_x,    **kwargs)
                     generator.optimize(data_x, **kwargs)
 
-                if (i + 1) % 60 == 0 or (i+1) == len(tr_loader):
+                    if task > 0 and args.rehearsal:
+                        # potentially update the indices of `re_x`, or even it's compression level
+                        generator.buffer_update_idx(re_x, re_y, re_t)
+
+                if (i + 1) % 40 == 0 or (i+1) == len(tr_loader):
                     generator.log(task, writer=writer, should_print=True, mode='train')
 
                 if args.rehearsal:
@@ -196,7 +203,7 @@ for run in range(1): #args.n_runs):
                 drift_indices = new_indices
 
             # TODO: put this back
-            eval_drift(drift_images, drift_indices)
+            #eval_drift(drift_images, drift_indices)
 
         # store the last minibatch
         drift_images  += [to_be_added[0]]
