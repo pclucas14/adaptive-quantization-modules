@@ -151,7 +151,7 @@ class QLayer(nn.Module):
             buffer.update(buffer_idx, argmin)
 
 
-    def sample_from_buffer(self, n_samples):
+    def sample_from_buffer(self, n_samples, from_comp=False):
         """ only adding this header cuz all other methods have one """
 
         n_samples = int(n_samples)
@@ -806,14 +806,20 @@ class BasicBlock(nn.Module):
         return out
 
 class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes, nf, compressed = False):
+    def __init__(self, block, num_blocks, num_classes, nf, in_size=(3,128,128), compressed = False):
         super(ResNet, self).__init__()
         self.in_planes = nf
         self.compressed = compressed
+        self.start_size = in_size
 
-        self.conv1 = nn.Conv2d(3, nf, kernel_size=7, stride=3,
-                     padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(nf * 1)
+        if self.compressed:
+            self.conv1 = nn.Conv2d(in_size[0], nf, kernel_size=1, stride=1,
+                                   padding=0, bias=False)
+            self.bn1 = nn.BatchNorm2d(nf * 1)
+        else:
+            self.conv1 = nn.Conv2d(3, nf, kernel_size=7, stride=3,
+                         padding=1, bias=False)
+            self.bn1 = nn.BatchNorm2d(nf * 1)
         self.layer1 = self._make_layer(block, nf * 1, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, nf * 2, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, nf * 4, num_blocks[2], stride=2)
@@ -830,7 +836,7 @@ class ResNet(nn.Module):
 
     def return_hidden(self, x):
         bsz = x.size(0)
-        out = F.relu(self.bn1(self.conv1(x.view(bsz, 3, 128, 128))))
+        out = F.relu(self.bn1(self.conv1(x.view(bsz, *self.start_size))))
         out = self.layer1(out)
         out = self.layer2(out)
         out = self.layer3(out)
@@ -845,8 +851,8 @@ class ResNet(nn.Module):
         return out
 
 
-def ResNet18(nclasses, nf=100, compressed=False):
-    return ResNet(BasicBlock, [2, 2, 2, 2], nclasses, nf, compressed=compressed)
+def ResNet18(nclasses, nf=100, in_size=(3,128,128),compressed=False):
+    return ResNet(BasicBlock, [2, 2, 2, 2], nclasses, nf, in_size, compressed=compressed)
 
 
 if __name__ == '__main__':

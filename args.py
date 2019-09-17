@@ -67,6 +67,7 @@ def get_global_args(arglist):
     add('--num_blocks', type=int, default=1, help='number of QLayers in QStack')
 
     add('--xyz', action='store_true', help='if True, xyz coordinates are used instead of polar')
+    add('--from_compressed', type=int, default=1)
 
     # Misc
     add('--seed', type=int, default=521)
