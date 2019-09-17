@@ -290,6 +290,7 @@ class QStack(nn.Module):
             self.mem_used_   = 0        # total float used across blocks
 
             self.data_size = np.prod(args.data_size)
+            self.can_store_reg = mem_size // self.data_size
 
             # whether we need to recompute the buffer statistics
             self.up_to_date_mu = self.up_to_date_as  = True
@@ -447,7 +448,7 @@ class QStack(nn.Module):
             else:
                 out_x = torch.cat((xx, out_x))
 
-            #out_x = block.decoder(out_x)
+            # use old weights when sampling
             out_x = block.old_decoder(out_x)
 
             i += 1
@@ -456,14 +457,11 @@ class QStack(nn.Module):
         self.sampled_indices = torch.cat([self.reg_buffer.sampled_indices.cpu()] + \
                 self.sampled_indices)
 
-        # TODO: should be ordered increasingly more compressed
         return torch.cat((reg_x, out_x)), torch.cat(out_y), torch.cat(out_t)
 
 
     def add_reservoir(self, x, y, t, **kwargs):
         """ Reservoir Sampling Buffer Addition """
-
-        #print(self.reg_buffer.n_samples)
 
         mem_free = self.mem_size - self.mem_used
 
@@ -472,7 +470,8 @@ class QStack(nn.Module):
             # p(amt of samples that fit in mem / samples see so far)
             indices = torch.FloatTensor(x.size(0)).to(x.device).\
                     uniform_(0, self.n_seen_so_far).long()
-            valid_indices = (indices < self.all_stored).long()
+
+            valid_indices = (indices < max(self.can_store_reg, self.all_stored)).long()
 
             # indices of samples to be added in mem
             # note that this process is independant of the compression rate
@@ -499,21 +498,29 @@ class QStack(nn.Module):
             block_id = (per_block_l2 < self.args.recon_th).sum(dim=0)
 
             # we calculate the amount of space that needs to be freed
-            space_needed = F.one_hot(block_id, len(self.blocks) + 1).float()
+            space_needed = F.one_hot(block_id[idx_new_data], len(self.blocks) + 1).float()
             space_needed = (space_needed * self.mem_per_block).sum()
             space_needed = (space_needed - mem_free).clamp_(min=0.)
+
+            # for samples that will not be added, mark their block id as -1
+            if idx_new_data.size(0) < x.size(0):
+                ind = torch.ones(block_id.size(0))
+                ind[idx_new_data] -= 1
+                ind = ind.nonzero().squeeze()
+                block_id[ind] = -1
 
             # we want the removal of samples in the buffer to be agnostic to the
             # compression rate. We determine how much to remove from every block
             # E[removed from b_i] = space_bi_takes / total_space * space_to_be_removed
-            to_be_removed_weights = torch.Tensor([self.mem_used] + [x.n_memory for x in self.blocks])
-            to_be_removed_weights = to_be_removed_weights / to_be_removed_weights.sum()
+            to_be_removed_weights = torch.Tensor([self.reg_buffer.n_memory] + \
+                    [block.n_memory for block in self.blocks])
 
-            tbr_per_block_mem = to_be_removed_weights * space_needed
-            tbr_per_block_n_samples = (tbr_per_block_mem / self.mem_per_block.cpu()).ceil()
-
-            # if nothing needs to be deleted, this tensor will be `nan`. This is a simple fix
-            tbr_per_block_n_samples[tbr_per_block_n_samples != tbr_per_block_n_samples] = 0.
+            if space_needed > 0:
+                to_be_removed_weights = to_be_removed_weights / to_be_removed_weights.sum()
+                tbr_per_block_mem = to_be_removed_weights * space_needed
+                tbr_per_block_n_samples = (tbr_per_block_mem / self.mem_per_block.cpu()).ceil()
+            else:
+                tbr_per_block_n_samples = torch.zeros_like(to_be_removed_weights).long()
 
             # mark the buffer stats as needing update
             self.up_to_date(False)
@@ -533,13 +540,14 @@ class QStack(nn.Module):
             """ Making sure everything is behaving as expected """
 
             # update statistic
-            self.n_seen_so_far += idx_new_data.size(0)
+            self.n_seen_so_far += x.size(0)
 
             for block in self.blocks:
                 block.log.log('buffer-samples-B%d' % block.id, block.n_samples, per_task=False)
 
             block.log.log('buffer_samples-reg', self.reg_stored, per_task=False)
             block.log.log('buffer-mem', self.mem_used, per_task=False)
+            block.log.log('n_seen_so_far', self.n_seen_so_far, per_task=False)
 
             """ Monitor label distribution in buffers """
             hist = torch.zeros(self.args.n_classes).long()
@@ -552,7 +560,7 @@ class QStack(nn.Module):
                     hist += block.buffer[0].y.sum(dim=0).cpu()
 
             hist = hist.float()
-            hist = hist / hist.sum()
+            #hist = hist / hist.sum()
 
             block.log.log('buffer-y-dist', hist, per_task=False)
 
