@@ -94,6 +94,9 @@ class Buffer(nn.Module):
             self.bx = self.bx[:-n_samples]
             self.by = self.by[:-n_samples]
             self.bt = self.bt[:-n_samples]
+            #self.bx = self.bx[n_samples:]
+            #self.by = self.by[n_samples:]
+            #self.bt = self.bt[n_samples:]
 
         self.n_samples -= n_samples
         self.n_memory  -= n_samples * self.mem_per_sample
@@ -102,6 +105,11 @@ class Buffer(nn.Module):
     def sample(self, amt, exclude_task=None):
 
         amt = int(amt)
+
+        if amt == 0:
+            self.sampled_indices = self.by[:0]
+            return self.bx[:0], self.by[:0], self.bt[:0]
+
         if exclude_task is not None:
             valid_indices = (self.t != exclude_task).nonzero().squeeze()
             bx, by, bt = self.bx[valid_indices], self.by[valid_indices], self.bt[valid_indices]
