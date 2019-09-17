@@ -16,7 +16,7 @@ from args    import get_args
 from modular import QStack, ResNet18
 import datetime
 args = get_args()
-
+args.n_runs = 1
 # functions
 Mean = lambda x : sum(x) / len(x)
 rescale_inv = (lambda x : x * 0.5 + 0.5)
@@ -98,7 +98,11 @@ def eval_classifier(all_models):
                 for run in range(args.n_runs):
                     for task_model, model in enumerate(all_models[run]):
                         model = model.eval().to(args.device)
-                        logits = model(data)
+                        if args.from_compressed:
+                            logits = model(generator.up(data))
+                        else:
+                            logits = model(data)
+                       # logits = model(data)
                         if args.multiple_heads:
                             logits = logits.masked_fill(loader.dataset.mask == 0, -1e9)
                         loss = F.cross_entropy(logits, target)
@@ -130,8 +134,8 @@ def eval_classifier(all_models):
         avg = np.array(avgs).mean()
         std = np.array(avgs).std()
         with open(name_log_txt, "a") as text_file:
-            print('After Task {} Max loss = {}. AVG over {} runs : {:.4f} +- {:.4f}'
-                  .format(task_model, args.max_loss, args.n_runs, avg, std * 2. / np.sqrt(args.n_runs)), file=text_file)
+            print('After Task {}  AVG over {} runs : {:.4f} +- {:.4f}'
+                  .format(task_model, args.n_runs, avg, std * 2. / np.sqrt(args.n_runs)), file=text_file)
 
 def eval_drift(real_img, indices):
     """ evaluate how much the compressed representations deviate from ground truth """
@@ -191,7 +195,11 @@ for run in range(1): #args.n_runs):
 
     # reproducibility
     set_seed(args.seed)
-    model = ResNet18(args.n_classes, nf=20, compressed=True).to(args.device)
+    if args.from_compressed:
+        sz = (args.layers[0].enc_height,64,64)
+    else:
+        sz = (3,128,128)
+    model = ResNet18(args.n_classes, nf=20, in_size = sz, compressed=True).to(args.device)
     opt =  torch.optim.SGD(model.parameters(), lr=0.01)
     all_models[run] = []
     # fetch data
@@ -241,7 +249,12 @@ for run in range(1): #args.n_runs):
                         generator.buffer_update_idx(re_x, re_y, re_t)
                     #classifier
                     opt.zero_grad()
-                    F.cross_entropy(model(data_x),data_y).backward()
+                    if args.from_compressed:
+                        out = model(generator.up(data_x))
+                    else:
+                        out = model(data_x)
+
+                    F.cross_entropy(out,data_y).backward()
                     opt.step()
 
                 if (i + 1) % 60 == 0 or (i+1) == len(tr_loader):
@@ -288,7 +301,7 @@ for run in range(1): #args.n_runs):
 
         # evaluate on valid set
         print(task)
-        eval('valid', max_task=task)
+      #  eval('valid', max_task=task)
         generator.train()
         print('\n\n')
     eval_classifier(all_models)
