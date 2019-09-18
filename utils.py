@@ -29,7 +29,7 @@ class RALog():
         for key, value in self.storage.items():
             out += fill(key, 25)
             if type(value) == np.ndarray:
-                out += str(value[:np.argwhere(value == 0)[0][0]])
+                out += str(value) #[:np.argwhere(value == 0)[0][0]])
             else:
                 out += '{:.4f}\t'.format(value)
         return out
