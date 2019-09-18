@@ -7,6 +7,13 @@ from torch.nn import functional as F
 from buffer import *
 from vqvae  import Quantize, GumbelQuantize, AQuantize, Encoder, Decoder
 
+from torchvision.utils import save_image
+from PIL import Image
+
+def sho(x):
+    save_image(x * .5 + .5, 'tmp.png')
+    Image.open('tmp.png').show()
+
 # Quantization Building Block
 # ------------------------------------------------------
 
@@ -98,7 +105,17 @@ class QLayer(nn.Module):
         for argmin, buffer in zip(argmins, self.buffer):
             # it's possible some samples in the batch were added in full res.
             # we therefore take them out
-            argmin = argmin[-y.size(0):]
+            if idx.nonzero().size(0) > 2:
+                xx = self.idx_2_hid(argmins)
+                yy = self.decoder(xx)
+                #import pdb; pdb.set_trace()
+                xx = 1
+
+            # TODO: check this
+            # Update: the following is because in main,
+            # data_x = cat((input_x, re_x)). and we want to fetch input_x
+            #argmin = argmin[-y.size(0):]
+            argmin = argmin[:y.size(0)]
             buffer.add(argmin[idx], y[idx], t, swap_idx)
 
 
@@ -431,22 +448,22 @@ class QStack(nn.Module):
         r_blocks, r_spb = self.blocks[::-1], reversed(samples_per_block[1:])
 
         i = 0
-        out_y = [reg_y]
-        out_t = [reg_t]
         for (block_samples, block) in zip(r_spb, r_blocks):
             if block_samples == 0 and i == 0:
                 continue
 
             xx, yy, tt  = block.sample_from_buffer(block_samples)
-            out_y = [yy] + out_y
-            out_t = [tt] + out_t
 
             self.sampled_indices = [block.sampled_indices] + self.sampled_indices
 
             if i == 0:
                 out_x = xx
+                out_y = yy
+                out_t = tt
             else:
                 out_x = torch.cat((xx, out_x))
+                out_y = torch.cat((yy, out_y))
+                out_t = torch.cat((tt, out_t))
 
             # use old weights when sampling
             out_x = block.old_decoder(out_x)
@@ -457,7 +474,7 @@ class QStack(nn.Module):
         self.sampled_indices = torch.cat([self.reg_buffer.sampled_indices.cpu()] + \
                 self.sampled_indices)
 
-        return torch.cat((reg_x, out_x)), torch.cat(out_y), torch.cat(out_t)
+        return torch.cat((reg_x, out_x)), torch.cat((reg_y, out_y)), torch.cat((reg_t, out_t))
 
 
     def add_reservoir(self, x, y, t, **kwargs):
