@@ -38,7 +38,8 @@ class QLayer(nn.Module):
             if args.model == 'vqvae':
                 qt += [Quantize(args.embed_dim // args.num_codebooks,
                             args.num_embeddings, # // size ** 2,
-                            decay=args.decay, size=size)]
+                            decay=args.decay, size=size,
+                            embed_grad_update=args.embed_grad_update)]
             elif args.model == 'gumbel':
                 qt += [GumbelQuantize(args.embed_dim // args.num_codebooks)]
             elif args.model == 'argmax':
@@ -66,8 +67,8 @@ class QLayer(nn.Module):
             self.buffer = nn.ModuleList(buffers)
 
             # same for now
-            self.old_quantize = self.quantize
-            self.old_decoder  = self.decoder
+            self.old_quantize = deepcopy(self.quantize)
+            self.old_decoder  = deepcopy(self.decoder)
 
             assert self.mem_per_sample == np.prod(args.data_size) / self.comp_rate
 
@@ -87,10 +88,9 @@ class QLayer(nn.Module):
 
         self.old_decoder   = deepcopy(self.decoder)
         self.old_quantize  = deepcopy(self.quantize)
-        self.old_decoder.training = self.old_quantize.training = False
 
 
-    def add_to_buffer(self, argmins, y, t, idx=None):
+    def add_to_buffer(self, argmins, y, t, ds_idx, idx=None):
         """ adds indices to layer buffer """
 
         assert len(argmins) == len(self.buffer)
@@ -103,20 +103,12 @@ class QLayer(nn.Module):
         swap_idx = torch.randperm(int(self.n_samples))[:(idx == 1).sum()]
 
         for argmin, buffer in zip(argmins, self.buffer):
-            # it's possible some samples in the batch were added in full res.
-            # we therefore take them out
-            if idx.nonzero().size(0) > 2:
-                xx = self.idx_2_hid(argmins)
-                yy = self.decoder(xx)
-                #import pdb; pdb.set_trace()
-                xx = 1
-
             # TODO: check this
             # Update: the following is because in main,
             # data_x = cat((input_x, re_x)). and we want to fetch input_x
             #argmin = argmin[-y.size(0):]
             argmin = argmin[:y.size(0)]
-            buffer.add(argmin[idx], y[idx], t, swap_idx)
+            buffer.add(argmin[idx], y[idx], t, ds_idx[idx], swap_idx)
 
 
     def rem_from_buffer(self, n_samples=None, idx=None):
@@ -135,7 +127,7 @@ class QLayer(nn.Module):
                 == self.buffer[-1].bx.size(0), pdb.set_trace()
 
 
-    def add_argmins(self, y, t, argmin_idx=None, last_n=None):
+    def add_argmins(self, y, t, ds_idx, argmin_idx=None, last_n=None):
         """ adds new representations to the buffer.
             made to be used with `update_buffer_idx` """
 
@@ -150,7 +142,7 @@ class QLayer(nn.Module):
             if argmin_idx is not None:
                 argmin = argmin[argmin_idx]
 
-            buffer.add(argmin, y, t, swap_idx)
+            buffer.add(argmin, y, t, ds_idx, swap_idx)
 
 
     def update_buffer(self, buffer_idx, argmin_idx=None, last_n=None):
@@ -171,26 +163,29 @@ class QLayer(nn.Module):
     def sample_from_buffer(self, n_samples, from_comp=False):
         """ only adding this header cuz all other methods have one """
 
-        n_samples = int(n_samples)
+        with torch.no_grad():
+            n_samples = int(n_samples)
 
-        idx = torch.randperm(self.n_samples)[:n_samples]
-        self.sampled_indices = idx
+            idx = torch.randperm(self.n_samples)[:n_samples]
+            self.sampled_indices = idx
 
-        # store the last sampled indices for a potential update
-        self.sampled_idx = idx
+            # store the last sampled indices for a potential update
+            self.sampled_idx = idx
 
-        #for i, (qt, buffer) in enumerate(zip(self.quantize, self.buffer)):
-        for i, (qt, buffer) in enumerate(zip(self.old_quantize, self.buffer)):
-            if i == 0:
-                out_x = [qt.idx_2_hid(buffer.bx[idx])]
-                out_y = buffer.by[idx]
-                out_t = buffer.bt[idx]
-            else:
-                out_x += [qt.idx_2_hid(buffer.bx[idx])]
-                assert (out_y - buffer.by[idx]).abs().sum() == 0
-                assert (out_t - buffer.bt[idx]).abs().sum() == 0
+            #for i, (qt, buffer) in enumerate(zip(self.quantize, self.buffer)):
+            for i, (qt, buffer) in enumerate(zip(self.old_quantize, self.buffer)):
+                if i == 0:
+                    out_x = [qt.idx_2_hid(buffer.bx[idx])]
+                    out_y = buffer.by[idx]
+                    out_t = buffer.bt[idx]
+                    out_idx = buffer.bidx[idx]
+                else:
+                    out_x += [qt.idx_2_hid(buffer.bx[idx])]
+                    assert (out_y - buffer.by[idx]).abs().sum() == 0
+                    assert (out_t - buffer.bt[idx]).abs().sum() == 0
+                    assert (out_idx - buffer.bidx[idx]).abs().sum() == 0
 
-        return torch.cat(out_x, 1), out_y, out_t
+            return torch.cat(out_x, 1), out_y, out_t, out_idx
 
 
     def idx_2_hid(self, indices):
@@ -232,13 +227,11 @@ class QLayer(nn.Module):
         self.diffs   = diffs
         self.argmins = argmins
 
-        '''
         if not kwargs.get('no_log', False):
             # store as scalars for convenience
             for i in range(len(self.diffs)):
                 self.log.log('ppl-B%d-C%d'  % (self.id, i), self.ppls[i],  per_task=False)
                 self.log.log('diff-B%d-C%d' % (self.id, i), self.diffs[i], per_task=False)
-        '''
         return z_q
 
 
@@ -267,7 +260,7 @@ class QLayer(nn.Module):
         self.recon = recon.item()
         if not kwargs.get('no_log', False):
             # during eval we actually perform a complete log, so no need for per-task here
-            #self.log.log('Distill_recon-B%d' % self.id, self.recon, per_task=False)
+            self.log.log('Distill_recon-B%d' % self.id, self.recon, per_task=False)
             pass
 
         return recon, diffs
@@ -298,7 +291,7 @@ class QStack(nn.Module):
 
         if args.rehearsal:
             mem_size  = args.mem_size * np.prod(args.data_size)
-            mem_size -= sum(p.numel() for p in self.parameters())
+            #mem_size -= sum(p.numel() for p in self.parameters())
 
             self.mem_size = mem_size    # total floats that can be stored across all blocks
             self.n_seen_so_far = 0      # number of samples seen so far
@@ -367,7 +360,7 @@ class QStack(nn.Module):
             block.update_old_decoder()
 
 
-    def buffer_update_idx(self, re_x, re_y, re_t):
+    def buffer_update_idx(self, re_x, re_y, re_t, re_ds_idx):
 
         re_target = self.all_levels_recon[:, -re_x.size(0):]
 
@@ -401,7 +394,7 @@ class QStack(nn.Module):
 
             # 3) add new representations
             add_mask    = (pre_block_id < (i+1))  * (new_block_id == (i+1))
-            block.add_argmins(re_y[add_mask], re_t[add_mask], argmin_idx=add_mask, last_n=re_x.size(0))
+            block.add_argmins(re_y[add_mask], re_t[add_mask], re_ds_idx[add_mask], argmin_idx=add_mask, last_n=re_x.size(0))
 
         # will need to recompute statistics
         self.up_to_date(False)
@@ -435,14 +428,14 @@ class QStack(nn.Module):
         import pdb
         assert samples_per_block[0] <= self.reg_buffer.n_samples, pdb.set_trace()
 
-        reg_x, reg_y, reg_t = self.reg_buffer.sample(samples_per_block[0])
+        reg_x, reg_y, reg_t, reg_ds_idx = self.reg_buffer.sample(samples_per_block[0])
 
         # keep strack of the sampled indices
         self.sampled_indices = []
 
         if samples_per_block[0] == n_samples:
             self.sampled_indices = self.reg_buffer.sampled_indices
-            return reg_x, reg_y, reg_t
+            return reg_x, reg_y, reg_t, reg_ds_idx
 
         # we reverse the blocks, so that all the decoding can be done in one pass
         r_blocks, r_spb = self.blocks[::-1], reversed(samples_per_block[1:])
@@ -452,7 +445,7 @@ class QStack(nn.Module):
             if block_samples == 0 and i == 0:
                 continue
 
-            xx, yy, tt  = block.sample_from_buffer(block_samples)
+            xx, yy, tt, ds_idx  = block.sample_from_buffer(block_samples)
 
             self.sampled_indices = [block.sampled_indices] + self.sampled_indices
 
@@ -460,10 +453,12 @@ class QStack(nn.Module):
                 out_x = xx
                 out_y = yy
                 out_t = tt
+                out_idx = ds_idx
             else:
                 out_x = torch.cat((xx, out_x))
                 out_y = torch.cat((yy, out_y))
                 out_t = torch.cat((tt, out_t))
+                out_idx = torch.cat((ds_idx, out_idx))
 
             # use old weights when sampling
             out_x = block.old_decoder(out_x)
@@ -474,10 +469,10 @@ class QStack(nn.Module):
         self.sampled_indices = torch.cat([self.reg_buffer.sampled_indices.cpu()] + \
                 self.sampled_indices)
 
-        return torch.cat((reg_x, out_x)), torch.cat((reg_y, out_y)), torch.cat((reg_t, out_t))
+        return torch.cat((reg_x, out_x)), torch.cat((reg_y, out_y)), torch.cat((reg_t, out_t)), torch.cat((reg_ds_idx, out_idx))
 
 
-    def add_reservoir(self, x, y, t, **kwargs):
+    def add_reservoir(self, x, y, t, ds_idx, **kwargs):
         """ Reservoir Sampling Buffer Addition """
 
         mem_free = self.mem_size - self.mem_used
@@ -545,14 +540,14 @@ class QStack(nn.Module):
             # finally, we iterate over the blocks and add / remove the required samples
             # 0th block (uncompressed)
             self.reg_buffer.free(tbr_per_block_n_samples[0])
-            self.reg_buffer.add(x[block_id == 0], y[block_id == 0], t, swap_idx=None)
+            self.reg_buffer.add(x[block_id == 0], y[block_id == 0], t, ds_idx[block_id == 0], swap_idx=None)
 
             for i, block in enumerate(self.blocks):
                 # free space
                 block.rem_from_buffer(tbr_per_block_n_samples[i + 1])
 
                 # add new points
-                block.add_to_buffer(block.argmins, y, t, idx=(block_id == (i+1)))
+                block.add_to_buffer(block.argmins, y, t, ds_idx, idx=(block_id == (i+1)))
 
             """ Making sure everything is behaving as expected """
 
@@ -563,8 +558,8 @@ class QStack(nn.Module):
                 block.log.log('buffer-samples-B%d' % block.id, block.n_samples, per_task=False)
 
             block.log.log('buffer_samples-reg', self.reg_stored, per_task=False)
-            block.log.log('buffer-mem', self.mem_used, per_task=False)
-            block.log.log('n_seen_so_far', self.n_seen_so_far, per_task=False)
+            # block.log.log('buffer-mem', self.mem_used, per_task=False)
+            # block.log.log('n_seen_so_far', self.n_seen_so_far, per_task=False)
 
             """ Monitor label distribution in buffers """
             hist = torch.zeros(self.args.n_classes).long()
@@ -579,7 +574,7 @@ class QStack(nn.Module):
             hist = hist.float()
             #hist = hist / hist.sum()
 
-            block.log.log('buffer-y-dist', hist, per_task=False)
+            # block.log.log('buffer-y-dist', hist, per_task=False)
 
 
     def up(self, x, **kwargs):
@@ -668,7 +663,7 @@ class QStack(nn.Module):
                 block.opt.zero_grad()
 
                 # TODO: retain graph if inter_level_gradient is on
-                loss.backward(retain_graph=(i+1) != len(self.blocks))
+                loss.backward() #retain_graph=(i+1) != len(self.blocks))
 
                 block.opt.step()
 
@@ -830,6 +825,7 @@ class BasicBlock(nn.Module):
         out = F.relu(out)
         return out
 
+'''
 class ResNet(nn.Module):
     def __init__(self, block, num_blocks, num_classes, nf, in_size=(3,128,128), compressed = False):
         super(ResNet, self).__init__()
@@ -875,9 +871,95 @@ class ResNet(nn.Module):
         out = self.linear(out)
         return out
 
-
 def ResNet18(nclasses, nf=100, in_size=(3,128,128),compressed=False):
     return ResNet(BasicBlock, [2, 2, 2, 2], nclasses, nf, in_size, compressed=compressed)
+'''
+
+# Classifiers
+# -----------------------------------------------------------------------------------
+
+def conv3x3(in_planes, out_planes, stride=1):
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                     padding=1, bias=False)
+
+
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_planes, planes, stride=1):
+        super(BasicBlock, self).__init__()
+        self.conv1 = conv3x3(in_planes, planes, stride)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = conv3x3(planes, planes)
+        self.bn2 = nn.BatchNorm2d(planes)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1,
+                          stride=stride, bias=False),
+                nn.BatchNorm2d(self.expansion * planes)
+            )
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = F.relu(out)
+        return out
+
+
+
+class ResNet(nn.Module):
+    def __init__(self, block, num_blocks, num_classes, nf, input_size):
+        super(ResNet, self).__init__()
+        self.in_planes = nf
+        self.input_size = input_size
+
+        self.conv1 = conv3x3(input_size[0], nf * 1)
+        self.bn1 = nn.BatchNorm2d(nf * 1)
+        #self.bn1  = CategoricalConditionalBatchNorm(nf, 2)
+        self.layer1 = self._make_layer(block, nf * 1, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, nf * 2, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, nf * 4, num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(block, nf * 8, num_blocks[3], stride=2)
+
+        # hardcoded for now
+        print(input_size[1])
+        last_hid = 2560 #nf * 8 * block.expansion if input_size[1] in [4,8,16,21,32] else 640 # 2560
+        self.linear = nn.Linear(last_hid, num_classes)
+        #self.linear = distLinear(last_hid, num_classes)
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+
+    def return_hidden(self, x):
+        bsz = x.size(0)
+        #pre_bn = self.conv1(x.view(bsz, 3, 32, 32))
+        #post_bn = self.bn1(pre_bn, 1 if is_real else 0)
+        #out = F.relu(post_bn)
+        out = F.relu(self.bn1(self.conv1(x.view(bsz, *self.input_size))))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+        out = F.avg_pool2d(out, 4)
+        out = out.view(out.size(0), -1)
+        return out
+
+    def forward(self, x):
+        out = self.return_hidden(x)
+        out = self.linear(out)
+        return out
+
+def ResNet18(nclasses, nf=20, input_size=(3, 32, 32)):
+    return ResNet(BasicBlock, [2, 2, 2, 2], nclasses, nf, input_size)
+
 
 
 if __name__ == '__main__':
