@@ -11,6 +11,7 @@ class Buffer(nn.Module):
         bx = dtype(0, *input_size).fill_(0)
         by = torch.LongTensor(0).fill_(0)
         bt = torch.LongTensor(0).fill_(0)
+        bidx = torch.LongTensor(0).fill_(0)
 
         self.n_samples = 0
         self.n_memory  = 0
@@ -19,6 +20,7 @@ class Buffer(nn.Module):
         self.register_buffer('bx', bx)
         self.register_buffer('by', by)
         self.register_buffer('bt', bt)
+        self.register_buffer('bidx', bidx)
 
         self.to_one_hot  = lambda x : x.new(x.size(0), n_classes).fill_(0).scatter_(1, x.unsqueeze(1), 1)
         self.arange_like = lambda x : torch.arange(x.size(0)).to(x.device)
@@ -39,7 +41,7 @@ class Buffer(nn.Module):
     def update(self, idx, value):
         self.bx[idx] = value
 
-    def add(self, in_x, in_y, in_t, swap_idx):
+    def add(self, in_x, in_y, in_t, in_idx, swap_idx):
         """ concatenate a sample at the end of the buffer """
 
         # convert int `in_t` to long tensor
@@ -50,18 +52,20 @@ class Buffer(nn.Module):
             if swap_idx is None:
                 swap_idx = torch.randperm(self.bx.size(0))[:in_x.size(0)]
 
-            tmp_x, tmp_y, tmp_t = self.bx[swap_idx], self.by[swap_idx], self.bt[swap_idx]
+            tmp_x, tmp_y, tmp_t, tmp_idx = self.bx[swap_idx], self.by[swap_idx], self.bt[swap_idx], self.bidx[swap_idx]
 
             # overwrite
             self.bx[swap_idx]   = in_x
             self.by[swap_idx]   = in_y
             self.bt[swap_idx]   = in_t
+            self.bidx[swap_idx] = in_idx
 
-            in_x, in_y, in_t = tmp_x, tmp_y, tmp_t
+            in_x, in_y, in_t, in_idx = tmp_x, tmp_y, tmp_t, tmp_idx
 
         self.bx = torch.cat((self.bx, in_x))
         self.by = torch.cat((self.by, in_y))
         self.bt = torch.cat((self.bt, in_t))
+        self.bidx = torch.cat((self.bidx, in_idx))
 
         self.n_samples += in_x.size(0)
         self.n_memory  += in_x.size(0) * self.mem_per_sample
@@ -90,10 +94,12 @@ class Buffer(nn.Module):
             self.bx = self.bx[idx_to_keep]
             self.by = self.by[idx_to_keep]
             self.bt = self.bt[idx_to_keep]
+            self.bidx = self.bidx[idx_to_keep]
         else:
             self.bx = self.bx[:-n_samples]
             self.by = self.by[:-n_samples]
             self.bt = self.bt[:-n_samples]
+            self.bidx = self.bidx[:-n_samples]
             #self.bx = self.bx[n_samples:]
             #self.by = self.by[n_samples:]
             #self.bt = self.bt[n_samples:]
@@ -108,13 +114,13 @@ class Buffer(nn.Module):
 
         if amt == 0:
             self.sampled_indices = self.by[:0]
-            return self.bx[:0], self.by[:0], self.bt[:0]
+            return self.bx[:0], self.by[:0], self.bt[:0], self.bidx[:0]
 
         if exclude_task is not None:
             valid_indices = (self.t != exclude_task).nonzero().squeeze()
-            bx, by, bt = self.bx[valid_indices], self.by[valid_indices], self.bt[valid_indices]
+            bx, by, bt, bidx = self.bx[valid_indices], self.by[valid_indices], self.bt[valid_indices], self.bidx[valid_indices]
         else:
-            bx, by, bt = self.bx[:self.n_samples], self.by[:self.n_samples], self.bt[:self.n_samples]
+            bx, by, bt, bidx = self.bx[:self.n_samples], self.by[:self.n_samples], self.bt[:self.n_samples], self.bidx[:self.n_samples]
 
         if bx.size(0) < amt:
             import pdb;
@@ -126,5 +132,5 @@ class Buffer(nn.Module):
 
             # TODO: Note make sure `exclude_task` flag is not used
             self.sampled_indices = indices
-            return bx[indices], by[indices], bt[indices]
+            return bx[indices], by[indices], bt[indices], bidx[indices]
 
