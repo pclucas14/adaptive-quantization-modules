@@ -34,7 +34,7 @@ def sq_l2(x, embedding):
 
 
 class Quantize(nn.Module):
-    def __init__(self, dim, num_embeddings, decay=0.99, eps=1e-5, size=1):
+    def __init__(self, dim, num_embeddings, decay=0.99, eps=1e-5, size=1, embed_grad_update=False):
         super().__init__()
 
         if type(size) == int:
@@ -45,12 +45,17 @@ class Quantize(nn.Module):
         self.decay = decay
         self.eps = eps
         self.size = size
+        self.egu  = embed_grad_update
 
         embed = torch.randn(*self.size, dim, num_embeddings).normal_(0, 0.02)
-        self.register_buffer('embed', embed)
-        self.register_buffer('cluster_size', torch.zeros(num_embeddings))
-        self.register_buffer('embed_avg', embed.clone())
         self.register_buffer('count', torch.zeros(num_embeddings).long())
+
+        if self.egu:
+            self.register_parameter('embed', nn.Parameter(embed))
+        else:
+            self.register_buffer('embed', embed)
+            self.register_buffer('cluster_size', torch.zeros(num_embeddings))
+            self.register_buffer('embed_avg', embed.clone())
 
     def forward(self, x):
         x = x.permute(0, 2, 3, 1)
@@ -87,7 +92,7 @@ class Quantize(nn.Module):
         avg_probs  = avg_probs.float().mean(dim=0)
         perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
 
-        if self.training:
+        if self.training and not self.egu:
             decay = self.decay
 
             self.cluster_size.data.mul_(self.decay).add_(
@@ -102,10 +107,30 @@ class Quantize(nn.Module):
             embed_normalized = self.embed_avg / cluster_size.unsqueeze(0)
             self.embed.data.copy_(embed_normalized)
 
+        if self.training and False:
             # bookkeeping
             self.count.data.add_(embed_onehot.sum(0).long())
 
+            used   = (self.count >  0).nonzero().squeeze()
+            unused = (self.count == 0).nonzero().squeeze()
+
+            target = self.embed.data[:, :, :, used]
+            target = target.mean(dim=-1, keepdim=True)
+            target = target.expand_as(self.embed[:, :, :, unused])
+            target = target + torch.rand_like(target) * 0.02
+
+            prev = self.embed.clone()
+            import pdb; pdb.set_trace()
+            self.embed[:, :, :, unused] = target
+            out = 11
+
         diff = (quantize.detach() - x).pow(2).mean()
+
+        if self.egu:
+            diff += (quantize - x.detach()).pow(2).mean()
+
+        # diff  = torch.mean(torch.norm((x - quantize.detach())**2, 2, 1))
+        # diff += torch.mean(torch.norm((x.detach() - quantize)**2, 2, 1))
         # The +- `x` is the "straight-through" gradient trick!
         quantize = x + (quantize - x).detach()
 
@@ -120,7 +145,7 @@ class Quantize(nn.Module):
 
 
     def embed_code(self, embed_id):
-        return F.embedding(embed_id, self.embed.permute(3, 0, 1, 2))
+        return self.embed.permute(3, 0, 1, 2)[embed_id]
 
 
     def idx_2_hid(self, indices):
@@ -305,9 +330,9 @@ class Encoder(nn.Module):
 
         elif downsample == 2:
             blocks = [
-                nn.Conv2d(in_channel, channel // 2, ks, stride=args.stride, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(channel // 2, channel, 3, padding=1),
+                nn.Conv2d(in_channel, channel, ks, stride=args.stride, padding=1),
+                #nn.ReLU(inplace=True),
+                #nn.Conv2d(channel // 2, channel, 3, padding=1),
             ]
 
         elif downsample == 1:
@@ -323,7 +348,7 @@ class Encoder(nn.Module):
         blocks += [nn.ReLU(inplace=True)]
 
         # equivalent of `quantize_conv`
-        blocks += [nn.Conv2d(channel, args.embed_dim, 1)]
+        # blocks += [nn.Conv2d(channel, args.embed_dim, 1)]
 
         self.blocks = nn.Sequential(*blocks)
 
@@ -348,7 +373,7 @@ class Decoder(nn.Module):
         else:
             ks = 4
 
-        blocks = [nn.Conv2d(in_channel, channel, 3, padding=1)]
+        blocks = [] #nn.Conv2d(in_channel, channel, 3, padding=1)]
 
         for i in range(num_residual_layers):
             blocks += [ResBlock(channel, num_residual_hiddens)]
