@@ -13,11 +13,11 @@ def get_default_layer_args(arglist):
     # Quantization settings
     add('--num_codebooks', type=int, default=1,
             help='Number of codebooks')
-    add('--embed_dim', type=int, default=64,
+    add('--embed_dim', type=int, default=100,
             help='Embedding size, `D` in paper')
-    add('--num_embeddings', type=int, default=256,
+    add('--num_embeddings', type=int, default=128,
             help='Number of embeddings to choose from, `K` in paper')
-    add('--commitment_cost', type=float, default=0.25,
+    add('--commitment_cost', type=float, default=1,
             help='Beta in the loss function')
     add('--decay', type=float, default=0.99,
             help='Moving av decay for codebook update')
@@ -28,9 +28,9 @@ def get_default_layer_args(arglist):
     # VQVAE model, defaults like in paper
     add('--enc_height', type=int, default=8,
             help="Encoder output size, used for downsampling and KL")
-    add('--num_hiddens', type=int, default=128,
+    add('--num_hiddens', type=int, default=100,
             help="Number of channels for Convolutions, not ResNet")
-    add('--num_residual_hiddens', type=int, default = 32,
+    add('--num_residual_hiddens', type=int, default = 100,
             help="Number of channels for ResNet")
     add('--num_residual_layers', type=int, default=2)
     add('--stride', type=int, nargs='+', default=[2], help='use if strides are uneven across H/W')
