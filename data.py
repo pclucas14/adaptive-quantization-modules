@@ -13,6 +13,8 @@ class XYDataset(torch.utils.data.Dataset):
     def __init__(self, x, y, **kwargs):
         self.x, self.y = x, y
 
+        self.rescale = lambda x : (x / 255. - 0.5) * 2.
+
         # this was to store the inverse permutation in permuted_mnist
         # so that we could 'unscramble' samples and plot them
         for name, value in kwargs.items():
@@ -38,7 +40,7 @@ class XYDataset(torch.utils.data.Dataset):
         if self.source == 'mnist':
             return x, y
         else:
-            return (x - 0.5) * 2, y
+            return (x - .5) * 2, y, idx
 
 
 """ Template Dataset for Continual Learning """
@@ -339,6 +341,8 @@ def get_split_cifar100(args):
 def get_miniimagenet(args):
     ROOT_PATH = '/home/eugene/data/filelists/miniImagenet/materials/images'
     ROOT_PATH_CSV = '/home/eugene/data/filelists/miniImagenet/materials'
+    ROOT_PATH = '/mnt/data/lpagec/imagenet/imagenet_images'
+    ROOT_PATH_CSV = '../prototypical-network-pytorch/materials'
 
     size = args.data_size[-1]
     args.n_tasks   = 20
