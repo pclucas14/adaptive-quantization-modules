@@ -25,6 +25,8 @@ def get_default_layer_args(arglist):
     add('--model', type=str, choices=['vqvae', 'gumbel', 'argmax'], default='vqvae')
     add('--learning_rate', type=float, default=1e-3)
 
+    add('--embed_grad_update', type=int, default=1)
+
     # VQVAE model, defaults like in paper
     add('--enc_height', type=int, default=8,
             help="Encoder output size, used for downsampling and KL")
@@ -83,6 +85,11 @@ def get_global_args(arglist):
     add('--mem_size', type=int, default=600)
     add('--n_classes', type=int, default=100)
 
+
+    # classifier args
+    add('--cls_lr', type=float, default=0.05)
+    add('--cls_n_iters', type=int, default=1)
+
     args = parser.parse_args(arglist)
 
     return args
@@ -120,6 +127,8 @@ def get_args():
 
     # for now let's specify every layer via the command line
     assert len(layer_flags) == global_args.num_blocks
+
+    assert global_args.cls_n_iters <= global_args.n_iters, 'might as well train gen. model more?'
 
     # we want to know what the compression factor is at every level
     current_shape = global_args.data_size[1:] # e.g. (128, 128)
