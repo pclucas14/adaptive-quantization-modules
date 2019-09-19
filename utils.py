@@ -27,7 +27,7 @@ class RALog():
         fill = lambda x, y : (x + ' ' * max(0, y - len(x)))[-y:]
         out = ''
         for key, value in self.storage.items():
-            out += fill(key, 25)
+            out += fill(key, 20)
             if type(value) == np.ndarray:
                 out += str(value) #[:np.argwhere(value == 0)[0][0]])
             else:
