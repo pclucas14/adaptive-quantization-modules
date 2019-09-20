@@ -10,10 +10,11 @@ https://github.com/rosinality/vq-vae-2-pytorch
 In turn based on
 https://github.com/deepmind/sonnet and ported it to PyTorch
 """
-
+import math
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.distributions import Categorical, RelaxedOneHotCategorical
 
 def sq_l2(x, embedding):
     """
@@ -47,7 +48,7 @@ class Quantize(nn.Module):
         self.size = size
         self.egu  = embed_grad_update
 
-        embed = torch.randn(*self.size, dim, num_embeddings).normal_(0, 0.02)
+        embed = torch.randn(*self.size, dim, num_embeddings).uniform_(-.02, 0.02) #normal_(0, 0.02)
         self.register_buffer('count', torch.zeros(num_embeddings).long())
 
         if self.egu:
@@ -107,22 +108,24 @@ class Quantize(nn.Module):
             embed_normalized = self.embed_avg / cluster_size.unsqueeze(0)
             self.embed.data.copy_(embed_normalized)
 
-        if self.training and False:
+        if self.training:
             # bookkeeping
             self.count.data.add_(embed_onehot.sum(0).long())
 
             used   = (self.count >  0).nonzero().squeeze()
             unused = (self.count == 0).nonzero().squeeze()
 
-            target = self.embed.data[:, :, :, used]
-            target = target.mean(dim=-1, keepdim=True)
-            target = target.expand_as(self.embed[:, :, :, unused])
-            target = target + torch.rand_like(target) * 0.02
+            if len(unused.size()) == 0:
+                self.unused = None
+            else:
+                target = self.embed.data[:, :, :, used]
+                target = target.mean(dim=-1, keepdim=True)
+                target = target.expand_as(self.embed[:, :, :, unused])
+                target = target + torch.rand_like(target) * 0.02
 
-            prev = self.embed.clone()
-            import pdb; pdb.set_trace()
-            self.embed[:, :, :, unused] = target
-            out = 11
+                self.unused = unused
+                self.target = target
+
 
         diff = (quantize.detach() - x).pow(2).mean()
 
@@ -141,7 +144,17 @@ class Quantize(nn.Module):
         quantize = quantize.permute(0, 3, 1, 2)
         #test = self.idx_2_hid(embed_ind)
 
-        return quantize, diff, embed_ind, perplexity
+        return quantize, diff, embed_ind, int(self.count.nonzero().size(0))  * 1000 + perplexity
+
+
+    def update_unused(self):
+        if self.unused is None:
+            return
+
+        tgt = self.embed.data.clone()
+        #tgt[:, :, :, self.unused] = self.target
+        tgt[:, :, :, self.unused] = 0.5 * self.target + (1. - 0.5) * tgt[:, :, :, self.unused]
+        self.embed.data.copy_(tgt.data)
 
 
     def embed_code(self, embed_id):
@@ -158,6 +171,111 @@ class Quantize(nn.Module):
             out = out.squeeze(-2).squeeze(-2)
 
         return out.permute(0, 3, 1, 2)
+
+
+
+class SoftQuantize(nn.Module):
+    def __init__(self, dim, num_embeddings, decay=0.99, eps=1e-5, size=1, embed_grad_update=True):
+        super().__init__()
+
+        if type(size) == int:
+            size = (size, size)
+
+        self.dim = dim
+        self.num_embeddings = num_embeddings
+        self.decay = decay
+        self.eps = eps
+        self.size = size
+        self.egu  = embed_grad_update
+
+        embed = torch.randn(*self.size, dim, num_embeddings).normal_(0, 0.02)
+        self.register_parameter('embed', nn.Parameter(embed))
+        self.register_buffer('count', torch.zeros(num_embeddings).long())
+
+    def forward(self, x):
+        x = x.permute(0, 2, 3, 1)
+
+        # funky stuff in
+        bs, hH, hW, C = x.size()
+        real_hH = hH // self.size[0]
+        real_hW = hW // self.size[1]
+
+        # x = x.view(bs, real_hH, self.size, real_hH, self.size, C).transpose(2,3).contiguous()
+        x = x.view(bs, real_hH, self.size[0], real_hW, self.size[1], C).transpose(2,3).contiguous()
+
+        # funky stuff out
+        #x = x.transpose(3,2).reshape(bs, hH, hH, C)
+        flatten = x.reshape(-1, *self.size, self.dim)
+        # Dist: squared-L2(p,q) = ||p||^2 + ||q||^2 - 2pq
+
+        flatten = flatten.view(flatten.size(0), -1)
+
+        distances = (
+            flatten.pow(2).sum(1, keepdim=True)
+            - 2 * flatten @ self.embed.view(-1, self.embed.size(-1))
+            + self.embed.view(-1, self.embed.size(-1)).pow(2).sum(0, keepdim=True)
+        )
+
+        dist = RelaxedOneHotCategorical(0.5, logits=-distances)
+
+        embed_ind = torch.argmax(dist.probs, dim=-1)
+
+        if self.training and not hasattr(self, 'no_update'):
+            sample = dist.rsample()
+        else:
+            print(hasattr(self, 'no_update'))
+            sample = F.one_hot(embed_ind, self.num_embeddings).float()
+
+        embed_ind = embed_ind.view(*x.shape[:-3])
+        quantize = torch.einsum('tk,hwdk->thwd', sample, self.embed)
+        quantize = quantize.view_as(x)
+
+        if self.training and not hasattr(self, 'no_update'):
+            # bookkeeping
+            self.count.data.add_(sample.sum(0).long())
+            self.unused = None
+
+        # funky stuff out
+        quantize = quantize.transpose(3,2).reshape(bs, hH, -1, C)
+        quantize = quantize.permute(0, 3, 1, 2)
+
+        KL = dist.probs * (dist.logits + math.log(self.num_embeddings))
+        KL[(dist.probs == 0).expand_as(KL)] = 0
+        diff = KL.sum() / x.size(0) * (32 * 32 * 3.)
+
+        diff = diff * 0.
+
+        avg_probs = torch.mean(sample, dim=1)
+        perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10), dim=-1))
+
+        return quantize, diff, embed_ind, perplexity
+
+
+    def update_unused(self):
+        if self.unused is None:
+            return
+
+        tgt = self.embed.data.clone()
+        #tgt[:, :, :, self.unused] = self.target
+        tgt[:, :, :, self.unused] = 0.5 * self.target + (1. - 0.5) * tgt[:, :, :, self.unused]
+        self.embed.data.copy_(tgt.data)
+
+
+    def embed_code(self, embed_id):
+        return self.embed.permute(3, 0, 1, 2)[embed_id]
+
+
+    def idx_2_hid(self, indices):
+        out = self.embed_code(indices) # bs, H, W, s1, s2, C
+        bs, hHs, hWs, _, _, C = out.shape
+        if max(self.size) > 1:
+            # out = out.transpose(3, 2).reshape(bs, H, H, C)
+            out = out.transpose(3, 2).reshape(bs, hHs * self.size[0], hWs * self.size[1], C)
+        else:
+            out = out.squeeze(-2).squeeze(-2)
+
+        return out.permute(0, 3, 1, 2)
+
 
 
 class GumbelQuantize(nn.Module):
