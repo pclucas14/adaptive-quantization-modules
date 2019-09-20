@@ -83,11 +83,19 @@ class QLayer(nn.Module):
         return sum([buffer.n_memory for buffer in self.buffer])
 
 
+    def update_unused_vectors(self):
+        for qt in self.quantize:
+            qt.update_unused()
+
+
     def update_old_decoder(self):
         """ updates the stale decoder weights with the new ones """
 
         self.old_decoder   = deepcopy(self.decoder)
         self.old_quantize  = deepcopy(self.quantize)
+
+        for qt in self.old_quantize:
+            qt.no_update = True
 
 
     def add_to_buffer(self, argmins, y, t, ds_idx, idx=None):
@@ -572,9 +580,9 @@ class QStack(nn.Module):
                     hist += block.buffer[0].y.sum(dim=0).cpu()
 
             hist = hist.float()
-            #hist = hist / hist.sum()
+            hist = hist / hist.sum()
 
-            # block.log.log('buffer-y-dist', hist, per_task=False)
+            block.log.log('buffer-y-dist', hist, per_task=False)
 
 
     def up(self, x, **kwargs):
@@ -618,6 +626,7 @@ class QStack(nn.Module):
             if i == 0:
                 input = x                           # option 2
             else:
+                x = x.detach()
                 input = torch.cat((x, block.z_q))   # option 1
 
             x = block.down(input, **kwargs)
@@ -666,6 +675,8 @@ class QStack(nn.Module):
                 loss.backward() #retain_graph=(i+1) != len(self.blocks))
 
                 block.opt.step()
+
+                block.update_unused_vectors()
 
         if self.args.optimization == 'global':
             self.opt.zero_grad()
@@ -926,7 +937,7 @@ class ResNet(nn.Module):
 
         # hardcoded for now
         print(input_size[1])
-        last_hid = 2560 #nf * 8 * block.expansion if input_size[1] in [4,8,16,21,32] else 640 # 2560
+        last_hid = nf * 8 * block.expansion if input_size[1] in [4,8,16,21,32] else 640 #2560
         self.linear = nn.Linear(last_hid, num_classes)
         #self.linear = distLinear(last_hid, num_classes)
 
