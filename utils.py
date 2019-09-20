@@ -9,6 +9,8 @@ import torch.nn.utils.weight_norm as wn
 from collections import OrderedDict as OD
 from collections import defaultdict as DD
 from addict import Dict
+from copy import deepcopy
+from argparse import Namespace
 
 # good'ol utils
 # ---------------------------------------------------------------------------------
@@ -59,11 +61,7 @@ class dotdict(dict):
 
 
 def print_and_save_args(args, path):
-    print(args)
-    # let's save the args as json to enable easy loading
-    with open(os.path.join(path, 'args.json'), 'w') as f:
-        json.dump(vars(args), f)
-
+    print(str(args), file=open(path, 'w'))
 
 def load_model_from_file(path):
     with open(os.path.join(path, 'args.json'), 'rb') as f:
