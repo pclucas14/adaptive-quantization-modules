@@ -17,17 +17,21 @@ from utils  import *
 from args    import get_args
 from modular import QStack, ResNet18
 
+import numpy as np
+np.set_printoptions(threshold=3)
+
 args = get_args()
+print(args)
 
 Mean = lambda x : sum(x) / len(x)
 rescale_inv = (lambda x : x * 0.5 + 0.5)
 
 # spawn writer
-model_name = 'test'
-log_dir    = join('runs', model_name)
+log_dir    = join('runs_cifar', args.model_name)
 sample_dir = join(log_dir, 'samples')
-writer     = SummaryWriter(log_dir=log_dir)
+writer     = SummaryWriter(log_dir=join(log_dir, 'tf'))
 
+print_and_save_args(args, join(log_dir, 'args.txt'))
 print('logging into %s' % log_dir)
 maybe_create_dir(sample_dir)
 best_test = float('inf')
@@ -73,8 +77,8 @@ def eval_drift(max_task=-1):
             if diff != diff: diff = torch.Tensor([0.])
 
             mses += [diff.item()]
-            #generator.blocks[0].log.log('drift_mse', F.mse_loss(x_t, target))
-            #generator.log(task, writer=writer, should_print=True, mode='buffer')
+            generator.blocks[0].log.log('drift_mse', F.mse_loss(x_t, target))
+            generator.log(task, writer=writer, mode='buffer', should_print=args.print_logs)
 
         print('DRIFT : ', mses, '\n\n')
 
@@ -106,8 +110,11 @@ def eval(name, max_task=-1):
                 logs['mse_%d'  % task_t]    += [F.mse_loss(out, data).item()]
                 logs['acc_%d'  % task_t]    += [(correct / deno).item()]
 
+            mean_acc = float(int(1000 * Mean(logs['acc_%d' % task_t]))) / 10.
+            RESULTS[run][0 if name == 'valid' else 1][max_task][task_t] = mean_acc
+
             print('task %d' % task_t)
-            generator.log(task_t, writer=writer, should_print=True, mode=name)
+            generator.log(task_t, writer=writer, mode=name, should_print=args.print_logs)
             if max_task >= 0:
                 outs += [data]
                 all_samples = torch.stack(outs)             # L, bs, 3, 32, 32
@@ -138,13 +145,17 @@ def eval(name, max_task=-1):
 # Train the model
 # -------------------------------------------------------------------------------
 
-final_accs, finetune_accs  = [], []
-for run in range(1):
+data = locate('data.get_%s' % args.dataset)(args)
+RESULTS = np.zeros((args.n_runs, 2, args.n_tasks, args.n_tasks))
+
+for run in range(args.n_runs):
+
     # reproducibility
     set_seed(run + 235)
 
     # fetch data
     data = locate('data.get_%s' % args.dataset)(args)
+    RESULTS = np.zeros((args.n_runs, 2, args.n_tasks, args.n_tasks))
 
     # make dataloaders
     train_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True, False, False])]
@@ -198,17 +209,24 @@ for run in range(1):
 
                     if n_iter < args.cls_n_iters:
                         opt_class.zero_grad()
-                        logits = classifier(data_x)
-                        loss_class = F.cross_entropy(logits, data_y)
+                        logits = classifier(input_x)
+                        loss_class = F.cross_entropy(logits, input_y)
                         loss_class.backward()
                         opt_class.step()
+
+                        if task > 0:
+                            opt_class.zero_grad()
+                            logits = classifier(re_x)
+                            loss_class = F.cross_entropy(logits, re_y)
+                            loss_class.backward()
+                            opt_class.step()
 
                 generator.update_old_decoder()
 
 
                 # add compressed rep. to buffer (ONLY during last epoch)
                 if (i+1) % 200 == 0 or (i+1) == len(tr_loader):
-                    generator.log(task, writer=writer, should_print=True, mode='train')
+                    generator.log(task, writer=writer, mode='train', should_print=args.print_logs)
 
                 if args.rehearsal:
                     generator.add_reservoir(input_x, input_y, task, idx_)
@@ -223,3 +241,28 @@ for run in range(1):
 
         buffer_sample, by, bt, _ = generator.sample_from_buffer(64)
         save_image(rescale_inv(buffer_sample), 'samples/buffer_%d.png' % task, nrow=8)
+
+np.save(join(log_dir, 'results'), RESULTS)
+
+# Save final results
+acc_avg = RESULTS.mean(axis=0)
+acc_std = RESULTS.std(axis=0)
+
+final_valid = acc_avg[0][-1]
+final_test  = acc_avg[1][-1]
+
+print('final valid:')
+out = ''
+for acc_, std_ in zip(acc_avg[0][-1], acc_std[0][-1]):
+    out += '{:.2f} +- {:.2f}\t'.format(acc_, std_ * 2 / args.n_runs)
+print(out)
+
+print('{:.2f} +- {:.2f}'.format(RESULTS[:, 0, -1, :].mean(), RESULTS[:, 0, -1, :].std() * 2 / args.n_runs))
+
+print('final test:')
+out = ''
+for acc_, std_ in zip(acc_avg[0][-1], acc_std[0][-1]):
+    out += '{:.2f} +- {:.2f}\t'.format(acc_, std_ * 2 / args.n_runs)
+print(out)
+
+print('{:.2f} +- {:.2f}'.format(RESULTS[:, 1, -1, :].mean(), RESULTS[:, 1, -1, :].std() * 2 / args.n_runs))
