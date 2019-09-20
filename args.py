@@ -84,7 +84,9 @@ def get_global_args(arglist):
     add('--rehearsal', type=int, default=1)
     add('--mem_size', type=int, default=600)
     add('--n_classes', type=int, default=100)
+    add('--n_runs', type=int, default=1)
 
+    add('--print_logs', type=int, default=1)
 
     # classifier args
     add('--cls_lr', type=float, default=0.05)
