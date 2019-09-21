@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class Buffer(nn.Module):
-    def __init__(self, input_size, n_classes, dtype=torch.LongTensor):
+    def __init__(self, input_size, n_classes, max_idx=256., dtype=torch.LongTensor):
         super().__init__()
 
         bx = dtype(0, *input_size).fill_(0)
@@ -15,7 +15,7 @@ class Buffer(nn.Module):
 
         self.n_samples = 0
         self.n_memory  = 0
-        self.mem_per_sample = np.prod(input_size)
+        self.mem_per_sample = np.prod(input_size) * np.log2(max_idx) / np.log2(256.)
 
         self.register_buffer('bx', bx)
         self.register_buffer('by', by)
