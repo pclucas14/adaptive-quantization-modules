@@ -87,10 +87,12 @@ def get_global_args(arglist):
     add('--n_runs', type=int, default=1)
 
     add('--print_logs', type=int, default=1)
+    add('--sunk_cost', action='store_true', help='if true, we do not substract model weights')
 
     # classifier args
     add('--cls_lr', type=float, default=0.05)
     add('--cls_n_iters', type=int, default=1)
+    add('--test_on_recon', action='store_true')
 
     args = parser.parse_args(arglist)
 
@@ -180,6 +182,7 @@ def get_args():
             argmin_shapes += [(current_shape[0] // qs[0], current_shape[1] // qs[1])]
 
         global_args.layers[i].comp_rate = np.prod(global_args.data_size) / float(total_idx)
+        global_args.layers[i].comp_rate *= np.log2(256) / np.log2(global_args.layers[i].num_embeddings)
         global_args.layers[i].argmin_shapes = argmin_shapes
 
         len_stride = len(global_args.layers[i].stride)
