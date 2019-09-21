@@ -27,7 +27,7 @@ Mean = lambda x : sum(x) / len(x)
 rescale_inv = (lambda x : x * 0.5 + 0.5)
 
 # spawn writer
-log_dir    = join('runs_cifar', args.model_name)
+log_dir    = join('runs_final', args.model_name)
 sample_dir = join(log_dir, 'samples')
 writer     = SummaryWriter(log_dir=join(log_dir, 'tf'))
 
@@ -101,7 +101,14 @@ def eval(name, max_task=-1):
 
                 outs = generator.reconstruct_all_levels(data)
                 out = generator(data,    **kwargs)
-                logits = classifier(data)
+
+                if args.test_on_recon:
+                    logits = classifier(out)
+                else:
+                    logits = classifier(data)
+
+                if args.multiple_heads:
+                    logits = logits.masked_fill(te_loader.dataset.mask == 0, -1e9)
 
                 pred = logits.argmax(dim=1, keepdim=True)
                 correct = pred.eq(target.view_as(pred)).sum().float()
@@ -151,11 +158,10 @@ RESULTS = np.zeros((args.n_runs, 2, args.n_tasks, args.n_tasks))
 for run in range(args.n_runs):
 
     # reproducibility
-    set_seed(run + 235)
+    set_seed(run)
 
     # fetch data
     data = locate('data.get_%s' % args.dataset)(args)
-    RESULTS = np.zeros((args.n_runs, 2, args.n_tasks, args.n_tasks))
 
     # make dataloaders
     train_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True, False, False])]
@@ -165,8 +171,6 @@ for run in range(args.n_runs):
     # fetch model and ship to GPU
     generator  = QStack(args).to(args.device)
     classifier = ResNet18(args.n_classes, 20, input_size=args.input_size).to(args.device)
-
-    print(generator)
 
     # optimizers
     opt_class = torch.optim.SGD(classifier.parameters(), lr=args.cls_lr)
@@ -195,7 +199,7 @@ for run in range(args.n_runs):
                 for n_iter in range(args.n_iters):
 
                     if task > 0 and args.rehearsal:
-                        re_x, re_y, re_t, re_idx = generator.sample_from_buffer(input_x.size(0) * 1)
+                        re_x, re_y, re_t, re_idx = generator.sample_from_buffer(input_x.size(0))
                         data_x, data_y = torch.cat((input_x, re_x)), torch.cat((input_y, re_y))
                     else:
                         data_x, data_y = input_x, input_y
@@ -210,6 +214,10 @@ for run in range(args.n_runs):
                     if n_iter < args.cls_n_iters:
                         opt_class.zero_grad()
                         logits = classifier(input_x)
+
+                        if args.multiple_heads:
+                            logits = logits.masked_fill(tr_loader.dataset.mask == 0, -1e9)
+
                         loss_class = F.cross_entropy(logits, input_y)
                         loss_class.backward()
                         opt_class.step()
@@ -217,11 +225,17 @@ for run in range(args.n_runs):
                         if task > 0:
                             opt_class.zero_grad()
                             logits = classifier(re_x)
+
+                            if args.multiple_heads:
+                                mask = torch.zeros_like(logits)
+                                mask.scatter_(1, tr_loader.dataset.task_ids[re_t], 1)
+                                logits  = logits.masked_fill(mask == 0, -1e9)
+
                             loss_class = F.cross_entropy(logits, re_y)
                             loss_class.backward()
                             opt_class.step()
 
-                generator.update_old_decoder()
+                # generator.update_old_decoder()
 
 
                 # add compressed rep. to buffer (ONLY during last epoch)
@@ -251,18 +265,23 @@ acc_std = RESULTS.std(axis=0)
 final_valid = acc_avg[0][-1]
 final_test  = acc_avg[1][-1]
 
+forget = RESULTS.max(axis=2) - RESULTS[:, :, -1, :]
+
 print('final valid:')
 out = ''
 for acc_, std_ in zip(acc_avg[0][-1], acc_std[0][-1]):
-    out += '{:.2f} +- {:.2f}\t'.format(acc_, std_ * 2 / args.n_runs)
+    out += '{:.2f} +- {:.2f}\t'.format(acc_, std_ * 2 / np.sqrt(args.n_runs))
 print(out)
 
-print('{:.2f} +- {:.2f}'.format(RESULTS[:, 0, -1, :].mean(), RESULTS[:, 0, -1, :].std() * 2 / args.n_runs))
+print('{:.2f} +- {:.2f}'.format(RESULTS[:, 0, -1, :].mean(), RESULTS[:, 0, -1, :].std() * 2 / np.sqrt(args.n_runs)))
+print('{:.2f} +- {:.2f}'.format(forget[:, 0, :].mean(), RESULTS[:, 0, :].std() * 2 / np.sqrt(args.n_runs)))
+
 
 print('final test:')
 out = ''
 for acc_, std_ in zip(acc_avg[0][-1], acc_std[0][-1]):
-    out += '{:.2f} +- {:.2f}\t'.format(acc_, std_ * 2 / args.n_runs)
+    out += '{:.2f} +- {:.2f}\t'.format(acc_, std_ * 2 / np.sqrt(args.n_runs))
 print(out)
 
-print('{:.2f} +- {:.2f}'.format(RESULTS[:, 1, -1, :].mean(), RESULTS[:, 1, -1, :].std() * 2 / args.n_runs))
+print('{:.2f} +- {:.2f}'.format(RESULTS[:, 1, -1, :].mean(), RESULTS[:, 1, -1, :].std() * 2 / np.sqrt(args.n_runs)))
+print('{:.2f} +- {:.2f}'.format(forget[:, 1, :].mean(), RESULTS[:, 1, :].std() * 2 / np.sqrt(args.n_runs)))
