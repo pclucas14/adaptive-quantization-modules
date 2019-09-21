@@ -61,16 +61,16 @@ class QLayer(nn.Module):
 
             buffers = []
             for shp in self.args.argmin_shapes:
-                buffers += [Buffer(shp, args.n_classes, dtype=torch.LongTensor)]
+                buffers += [Buffer(shp, args.n_classes, dtype=torch.LongTensor, max_idx=args.num_embeddings)]
                 self.mem_per_sample += buffers[-1].mem_per_sample
 
             self.buffer = nn.ModuleList(buffers)
 
             # same for now
-            self.old_quantize = deepcopy(self.quantize)
-            self.old_decoder  = deepcopy(self.decoder)
+            self.old_quantize = self.quantize
+            self.old_decoder  = self.decoder
 
-            assert self.mem_per_sample == np.prod(args.data_size) / self.comp_rate
+            assert -.01 < (self.mem_per_sample - np.prod(args.data_size) / self.comp_rate) < .01
 
 
     @property
@@ -299,7 +299,8 @@ class QStack(nn.Module):
 
         if args.rehearsal:
             mem_size  = args.mem_size * np.prod(args.data_size)
-            #mem_size -= sum(p.numel() for p in self.parameters())
+            if not args.sunk_cost:
+                mem_size -= sum(p.numel() for p in self.parameters())
 
             self.mem_size = mem_size    # total floats that can be stored across all blocks
             self.n_seen_so_far = 0      # number of samples seen so far
@@ -308,7 +309,7 @@ class QStack(nn.Module):
             self.mem_used_   = 0        # total float used across blocks
 
             self.data_size = np.prod(args.data_size)
-            self.can_store_reg = mem_size // self.data_size
+            self.can_store_reg = mem_size // (self.data_size)
 
             # whether we need to recompute the buffer statistics
             self.up_to_date_mu = self.up_to_date_as  = True
@@ -676,7 +677,7 @@ class QStack(nn.Module):
 
                 block.opt.step()
 
-                block.update_unused_vectors()
+                #block.update_unused_vectors()
 
         if self.args.optimization == 'global':
             self.opt.zero_grad()
