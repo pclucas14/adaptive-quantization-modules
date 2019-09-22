@@ -409,7 +409,7 @@ class QStack(nn.Module):
         self.up_to_date(False)
 
 
-    def sample_from_buffer(self, n_samples):
+    def sample_from_buffer(self, n_samples, exclude_task=None):
         """ something something something """
 
         # note: the block ids are off by one with block.id :/ i.e. block.id == 0 will be 1 here
@@ -437,7 +437,7 @@ class QStack(nn.Module):
         import pdb
         assert samples_per_block[0] <= self.reg_buffer.n_samples, pdb.set_trace()
 
-        reg_x, reg_y, reg_t, reg_ds_idx = self.reg_buffer.sample(samples_per_block[0])
+        reg_x, reg_y, reg_t, reg_ds_idx = self.reg_buffer.sample(samples_per_block[0], exclude_task=exclude_task)
 
         # keep strack of the sampled indices
         self.sampled_indices = []
