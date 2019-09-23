@@ -182,8 +182,8 @@ def get_split_cifar10(args):
     train = datasets.CIFAR10('../cl-pytorch/data/', train=True,  download=True)
     test  = datasets.CIFAR10('../cl-pytorch/data/', train=False, download=True)
 
-    train_x, train_y = train.data, train.targets
-    test_x,  test_y  = test.data,  test.targets
+    train_x, train_y = train.train_data, train.train_labels
+    test_x, test_y = test.test_data, test.test_labels
 
     # sort according to the label
     out_train = [

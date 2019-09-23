@@ -199,7 +199,7 @@ for run in range(args.n_runs):
                 for n_iter in range(args.n_iters):
 
                     if task > 0 and args.rehearsal:
-                        re_x, re_y, re_t, re_idx = generator.sample_from_buffer(input_x.size(0))
+                        re_x, re_y, re_t, re_idx = generator.sample_from_buffer(input_x.size(0),exclude_task=task)
                         data_x, data_y = torch.cat((input_x, re_x)), torch.cat((input_y, re_y))
                     else:
                         data_x, data_y = input_x, input_y
@@ -220,10 +220,10 @@ for run in range(args.n_runs):
 
                         loss_class = F.cross_entropy(logits, input_y)
                         loss_class.backward()
-                        opt_class.step()
+                       # opt_class.step()
 
                         if task > 0:
-                            opt_class.zero_grad()
+                        #    opt_class.zero_grad()
                             logits = classifier(re_x)
 
                             if args.multiple_heads:
@@ -233,7 +233,7 @@ for run in range(args.n_runs):
 
                             loss_class = F.cross_entropy(logits, re_y)
                             loss_class.backward()
-                            opt_class.step()
+                        opt_class.step()
 
                 # generator.update_old_decoder()
 
@@ -266,7 +266,7 @@ final_valid = acc_avg[0][-1]
 final_test  = acc_avg[1][-1]
 
 forget = RESULTS.max(axis=2) - RESULTS[:, :, -1, :]
-
+forget = forget[:,:,:-1]
 print('final valid:')
 out = ''
 for acc_, std_ in zip(acc_avg[0][-1], acc_std[0][-1]):
