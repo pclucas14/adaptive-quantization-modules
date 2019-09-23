@@ -5,17 +5,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class Buffer(nn.Module):
-    def __init__(self, input_size, n_classes, max_idx=256., dtype=torch.LongTensor):
+    def __init__(self, input_size, n_classes, max_idx=256., amt=0, dtype=torch.LongTensor):
         super().__init__()
 
-        bx = dtype(0, *input_size).fill_(0)
-        by = torch.LongTensor(0).fill_(0)
-        bt = torch.LongTensor(0).fill_(0)
-        bidx = torch.LongTensor(0).fill_(0)
+        self.input_size = input_size
+        self.n_classes  = n_classes
+        self.dtype      = dtype
 
-        self.n_samples = 0
-        self.n_memory  = 0
+        bx = dtype(amt, *input_size).fill_(0)
+        by = torch.LongTensor(amt).fill_(0)
+        bt = torch.LongTensor(amt).fill_(0)
+        bidx = torch.LongTensor(amt).fill_(0)
+
+        self.n_samples = amt
         self.mem_per_sample = np.prod(input_size) * np.log2(max_idx) / np.log2(256.)
+        self.n_memory  = amt * self.mem_per_sample
 
         self.register_buffer('bx', bx)
         self.register_buffer('by', by)
@@ -25,6 +29,10 @@ class Buffer(nn.Module):
         self.to_one_hot  = lambda x : x.new(x.size(0), n_classes).fill_(0).scatter_(1, x.unsqueeze(1), 1)
         self.arange_like = lambda x : torch.arange(x.size(0)).to(x.device)
         self.shuffle     = lambda x : x[torch.randperm(x.size(0))]
+
+    def expand(self, amt):
+        """ used when loading a model from `pth` file and the amt of samples in the buffer don't align """
+        self.__init__(self.input_size, self.n_classes, dtype=self.dtype, amt=amt)
 
     @property
     def x(self):
