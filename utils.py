@@ -117,6 +117,21 @@ def average_log(dic):
     return avgs
 
 
+def load_model(model, path):
+    # load weights
+    params = torch.load(path)
+
+    for name, param in params.items():
+        if 'buffer' in name.lower():
+            if 'reg' in name.lower():
+                model.reg_buffer.expand(param.size(0))
+            else:
+                parts = name.split('.')
+                block_id, buf_id = int(parts[1]), int(parts[3])
+                model.blocks[block_id].buffer[buf_id].expand(param.size(0))
+
+    model.load_state_dict(params)
+
 # loss functions
 # ---------------------------------------------------------------------------------
 def logistic_ll(mean, logscale, sample, binsize=1 / 256.0):
