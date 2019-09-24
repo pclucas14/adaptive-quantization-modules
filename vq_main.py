@@ -27,7 +27,7 @@ Mean = lambda x : sum(x) / len(x)
 rescale_inv = (lambda x : x * 0.5 + 0.5)
 
 # spawn writer
-log_dir    = join('runs_final', args.model_name)
+log_dir    = join('final_cifar10', args.model_name)
 sample_dir = join(log_dir, 'samples')
 writer     = SummaryWriter(log_dir=join(log_dir, 'tf'))
 
@@ -180,7 +180,7 @@ for run in range(args.n_runs):
 
     for task, tr_loader in enumerate(train_loader):
 
-        for epoch in range(1):
+        for epoch in range(args.n_epochs):
             generator.train()
             classifier.train()
             sample_amt = 0
@@ -218,12 +218,12 @@ for run in range(args.n_runs):
                         if args.multiple_heads:
                             logits = logits.masked_fill(tr_loader.dataset.mask == 0, -1e9)
 
+                        opt_class.zero_grad()
                         loss_class = F.cross_entropy(logits, input_y)
                         loss_class.backward()
-                        opt_class.step()
+                        #opt_class.step()
 
-                        if task > 0:
-                            opt_class.zero_grad()
+                        if task > 0 :
                             logits = classifier(re_x)
 
                             if args.multiple_heads:
@@ -233,13 +233,13 @@ for run in range(args.n_runs):
 
                             loss_class = F.cross_entropy(logits, re_y)
                             loss_class.backward()
-                            opt_class.step()
+                        opt_class.step()
 
-                # generator.update_old_decoder()
+                if args.n_iters > 0: generator.update_old_decoder()
 
 
                 # add compressed rep. to buffer (ONLY during last epoch)
-                if (i+1) % 200 == 0 or (i+1) == len(tr_loader):
+                if (i+1) % 20 == 0 or (i+1) == len(tr_loader):
                     generator.log(task, writer=writer, mode='train', should_print=args.print_logs)
 
                 if args.rehearsal:
@@ -251,10 +251,12 @@ for run in range(args.n_runs):
             generator.update_old_decoder()
             eval_drift(max_task=task)
             eval('valid', max_task=task)
-            eval('test', max_task=task)
+            if task == (args.n_tasks - 1) or True: eval('test', max_task=task)
 
         buffer_sample, by, bt, _ = generator.sample_from_buffer(64)
-        save_image(rescale_inv(buffer_sample), 'samples/buffer_%d.png' % task, nrow=8)
+        save_image(rescale_inv(buffer_sample), 'samples/buf__%s_%d.png' % (args.model_name, task), nrow=8)
+
+    print(RESULTS)
 
 np.save(join(log_dir, 'results'), RESULTS)
 
