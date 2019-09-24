@@ -196,6 +196,28 @@ class QLayer(nn.Module):
             return torch.cat(out_x, 1), out_y, out_t, out_idx
 
 
+    def sample_EVERYTHING(self):
+        """ only adding this header cuz all other methods have one """
+
+        with torch.no_grad():
+
+            idx = torch.randperm(self.n_samples)
+
+            for i, (qt, buffer) in enumerate(zip(self.old_quantize, self.buffer)):
+                if i == 0:
+                    out_x = [qt.idx_2_hid(buffer.bx[idx])]
+                    out_y = buffer.by[idx]
+                    out_t = buffer.bt[idx]
+                    out_idx = buffer.bidx[idx]
+                else:
+                    out_x += [qt.idx_2_hid(buffer.bx[idx])]
+                    assert (out_y - buffer.by[idx]).abs().sum() == 0
+                    assert (out_t - buffer.bt[idx]).abs().sum() == 0
+                    assert (out_idx - buffer.bidx[idx]).abs().sum() == 0
+
+            return torch.cat(out_x, 1), out_y, out_t, out_idx
+
+
     def idx_2_hid(self, indices):
         """ fetch latent representation from indices """
 
@@ -286,6 +308,8 @@ class QStack(nn.Module):
         self.n_seen_so_far = 0
         self.rehearsal_level = -1
 
+        self.register_buffer('recon_th', torch.Tensor(self.args.recon_th))
+
         """ assumes args is a nested dictionary, one for every block """
         blocks = []
         for layer_no in range(len(args.layers)):
@@ -375,7 +399,9 @@ class QStack(nn.Module):
 
         per_block_l2 = (re_x.unsqueeze(0) - re_target).pow(2)
         per_block_l2 = per_block_l2.mean(dim=(2,3,4))
-        block_id = (per_block_l2 < self.args.recon_th).sum(dim=0)
+
+        recon_th = self.recon_th.unsqueeze(1).expand_as(per_block_l2)
+        block_id = (per_block_l2 < recon_th).sum(dim=0)
 
         # TODO: build block id when sampling
         pre_block_id = self.last_block_id.to(block_id.device)
@@ -422,7 +448,11 @@ class QStack(nn.Module):
 
         #TODO: this will throw an error if no samples are stored in full resolution
         missing = n_samples - samples_per_block.sum()
-        samples_per_block[samples_per_block.argmax()] += missing
+
+        if missing <= self.reg_buffer.n_samples:
+            samples_per_block[0] += missing
+        else:
+            samples_per_block[samples_per_block.argmax()] += missing
 
         # keep track of this to update latent indices
         self.last_samples_per_block = samples_per_block
@@ -481,6 +511,46 @@ class QStack(nn.Module):
         return torch.cat((reg_x, out_x)), torch.cat((reg_y, out_y)), torch.cat((reg_t, out_t)), torch.cat((reg_ds_idx, out_idx))
 
 
+    def sample_EVERYTHING(self):
+        """ something something something """
+
+        reg_x, reg_y, reg_t = self.reg_buffer.bx, self.reg_buffer.by, self.reg_buffer.bt
+
+        # we reverse the blocks, so that all the decoding can be done in one pass
+        r_blocks = self.blocks[::-1]
+
+        i = 0
+        for block in r_blocks:
+
+            xx, yy, tt, ds_idx  = block.sample_EVERYTHING()
+            if i == 0 and xx.size(0) == 0:
+                continue
+
+            if i == 0:
+                out_x = xx
+                out_y = yy
+                out_t = tt
+                out_idx = ds_idx
+            else:
+                out_x = torch.cat((xx, out_x))
+                out_y = torch.cat((yy, out_y))
+                out_t = torch.cat((tt, out_t))
+                out_idx = torch.cat((ds_idx, out_idx))
+
+            # use old weights when sampling
+            outs = []
+            for chunk in out_x.split(100):
+                outs += [block.old_decoder(out_x)]
+
+            out_x = torch.cat(outs)
+            #out_x = block.old_decoder(out_x)
+
+            i += 1
+
+        return torch.cat((reg_x, out_x)).detach(), torch.cat((reg_y, out_y)).detach(), torch.cat((reg_t, out_t)).detach()
+
+
+
     def add_reservoir(self, x, y, t, ds_idx, **kwargs):
         """ Reservoir Sampling Buffer Addition """
 
@@ -516,7 +586,8 @@ class QStack(nn.Module):
 
             per_block_l2 = (x.unsqueeze(0) - target).pow(2)
             per_block_l2 = per_block_l2.mean(dim=(2,3,4))
-            block_id = (per_block_l2 < self.args.recon_th).sum(dim=0)
+            recon_th = self.recon_th.unsqueeze(1).expand_as(per_block_l2)
+            block_id = (per_block_l2 < recon_th).sum(dim=0)
 
             # we calculate the amount of space that needs to be freed
             space_needed = F.one_hot(block_id[idx_new_data], len(self.blocks) + 1).float()
@@ -938,7 +1009,7 @@ class ResNet(nn.Module):
 
         # hardcoded for now
         print(input_size[1])
-        last_hid = nf * 8 * block.expansion if input_size[1] in [4,8,16,21,32] else 640 #2560
+        last_hid = 2560# nf * 8 * block.expansion if input_size[1] in [4,8,16,21,32] else 640 #2560
         self.linear = nn.Linear(last_hid, num_classes)
         #self.linear = distLinear(last_hid, num_classes)
 
