@@ -342,6 +342,8 @@ while True:
         opt_class = torch.optim.SGD(classifier.parameters(), lr=0.025, momentum=0.9, weight_decay=5e-4)
     elif plt == 35:
         opt_class = torch.optim.SGD(classifier.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4)
+    elif plt == 40:
+        break
     tr_num, tr_den = 0, 0
     for _ in range(500):
         input_x, input_y, input_t, _ = generator.sample_from_buffer(128)
@@ -386,7 +388,7 @@ while True:
 
     print('valid acc : {:.4f}'.format(val_num / val_den))
 
-eval_cls('test', break_after=2)
+eval_cls('test', break_after=-1)
 '''
     valid_acc = eval_cls('valid', break_after=10)
     if valid_acc < last_valid_acc:
