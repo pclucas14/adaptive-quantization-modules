@@ -65,6 +65,7 @@ def get_global_args(arglist):
     add('--global_learning_rate', type=float, default=1e-4)
     add('--optimization', type=str, default='blockwise', choices=['blockwise', 'global'])
     add('--name', type=str, default='basic')
+    add('--gen_weights', type=str, default='gen.pth')
 
     add('--num_blocks', type=int, default=1, help='number of QLayers in QStack')
 

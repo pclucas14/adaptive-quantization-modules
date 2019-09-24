@@ -200,8 +200,8 @@ def eval_gen(name, max_task=-1, break_after=-1):
 data = locate('data.get_%s' % args.dataset)(args)
 RESULTS = np.zeros((args.n_runs, 2, args.n_tasks, args.n_tasks))
 
-for run in range(args.n_runs):
-
+#for run in range(args.n_runs):
+if False:
     # reproducibility
     set_seed(run)
 
@@ -281,15 +281,23 @@ for run in range(args.n_runs):
         torch.save(generator.state_dict(), save_path)
 
 # for the masks
+data = locate('data.get_%s' % args.dataset)(args)
+
+# make dataloaders
+train_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True, False, False])]
+
+kwargs = {'all_levels_recon':True}
+
+# fetch model and ship to GPU
+generator  = QStack(args).to(args.device)
 loader_cl = train_loader[0]
 generator.cuda()
 generator.eval()
 
 # optimizers
 classifier = ResNet18(args.n_classes, 20, input_size=args.input_size).to(args.device)
-classifier.train()
 print("number of classifier parameters:", sum([np.prod(p.size()) for p in classifier.parameters()]))
-opt_class = torch.optim.SGD(classifier.parameters(), lr=0.1, momentum=0.9, weight_decay=5e-4)
+opt_class = torch.optim.SGD(classifier.parameters(), lr=0.02, momentum=0.9, weight_decay=5e-4)
 task, epoch = 20, -1
 
 # build conveniant valid set
@@ -309,44 +317,10 @@ valid_loader_off = torch.utils.data.DataLoader(valid_ds, batch_size=256, shuffle
 
 
 last_valid_acc = 0.
-plt = 0
-##bon
-from PIL import Image
-from torchvision.utils import make_grid
-def topil(tensor, nrow=8, padding=2,
-               normalize=False, range=None, scale_each=False, pad_value=0):
-    tensor = rescale_inv(tensor)
-    grid = make_grid(tensor, nrow=nrow, padding=padding, pad_value=pad_value,
-                     normalize=normalize, range=range, scale_each=scale_each)
-    # Add 0.5 after unnormalizing to [0, 255] to round to nearest integer
-    ndarr = grid.mul_(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to('cpu', torch.uint8).numpy()
-    im = Image.fromarray(ndarr)
-    return im
-import torchvision.transforms as transforms
-normalize = transforms.Normalize(mean=[ 0 , 0, 0],
-                                     std=[0.5671, 0.5696, 0.5461])
-
-apply_aug = transforms.Compose([
-    transforms.Resize(156),
-    transforms.RandomResizedCrop(128),
-    transforms.RandomHorizontalFlip(),
-    transforms.ToTensor(),
-    normalize,
-])
-to_pil_image = transforms.ToPILImage()
-
 while True:
-    if plt == 10:
-        opt_class = torch.optim.SGD(classifier.parameters(), lr=0.05, momentum=0.9, weight_decay=5e-4)
-    elif plt == 20:
-        opt_class = torch.optim.SGD(classifier.parameters(), lr=0.025, momentum=0.9, weight_decay=5e-4)
-    elif plt == 30:
-        opt_class = torch.optim.SGD(classifier.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4)
     tr_num, tr_den = 0, 0
-    for _ in range(500):
+    for _ in range(100):
         input_x, input_y, input_t, _ = generator.sample_from_buffer(128)
-        dat = input_x.data.cpu().numpy()
-        input_x = torch.cat([apply_aug(topil(d)).unsqueeze(0) for d in input_x])
         input_x, input_y, input_t  = input_x.to(args.device), input_y.to(args.device), input_t.to(args.device)
 
         opt_class.zero_grad()
@@ -363,8 +337,7 @@ while True:
 
         tr_num += logits.max(dim=-1)[1].eq(input_y).sum().item()
         tr_den += logits.size(0)
-    plt+=1
-    print(plt)
+
     print('training acc : {:.4f}'.format(tr_num / tr_den))
 
     val_num, val_den = 0, 0

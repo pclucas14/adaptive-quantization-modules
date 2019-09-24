@@ -341,13 +341,13 @@ def get_split_cifar100(args):
 def get_miniimagenet(args):
     ROOT_PATH = '/home/eugene/data/filelists/miniImagenet/materials/images'
     ROOT_PATH_CSV = '/home/eugene/data/filelists/miniImagenet/materials'
-    ROOT_PATH = '/mnt/data/lpagec/imagenet/imagenet_images'
-    ROOT_PATH_CSV = '../prototypical-network-pytorch/materials'
+    #ROOT_PATH = '/mnt/data/lpagec/imagenet/imagenet_images'
+    #ROOT_PATH_CSV = '../prototypical-network-pytorch/materials'
 
     size = args.data_size[-1]
     args.n_tasks   = 20
     args.n_classes = 100
-    args.multiple_heads = True
+    args.multiple_heads = False
     args.n_classes_per_task = 5
     args.input_size = args.data_size
 

@@ -130,7 +130,7 @@ def load_model(model, path):
                 block_id, buf_id = int(parts[1]), int(parts[3])
                 model.blocks[block_id].buffer[buf_id].expand(param.size(0))
 
-    model.load_state_dict(params)
+    model.load_state_dict(params,strict=False)
 
 # loss functions
 # ---------------------------------------------------------------------------------
