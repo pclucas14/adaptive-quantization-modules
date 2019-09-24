@@ -334,7 +334,7 @@ apply_aug = transforms.Compose([
     normalize,
 ])
 to_pil_image = transforms.ToPILImage()
-maxval
+maxval = 0
 while True:
     if plt == 15:
         opt_class = torch.optim.SGD(classifier.parameters(), lr=0.05, momentum=0.9, weight_decay=5e-4)
@@ -390,8 +390,8 @@ while True:
             val_num += logits.max(dim=-1)[1].eq(input_y).sum().item()
 
     print('valid acc : {:.4f}'.format(val_num / val_den))
-    if val_num/val_den > maxval:
-        maxval=val_num/val_den
+    if val_num/float(val_den) > maxval:
+        maxval=val_num/float(val_den)
         torch.save(classifier.state_dict(),args.gen_weights+'.t7')
 eval_cls('test', break_after=-1)
 '''
