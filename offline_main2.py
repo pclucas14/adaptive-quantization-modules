@@ -268,7 +268,7 @@ for run in range(args.n_runs):
                 # -------------------------------------------------------------------------------
                 generator.update_old_decoder()
                 eval_drift(max_task=task)
-                if (task + 1) % 5 ==  0: eval_gen('valid', max_task=task, break_after=2)
+                if task < 4 or (task % 3 == 0): eval_gen('valid', max_task=task, break_after=2)
 
             buffer_sample, by, bt, _ = generator.sample_from_buffer(64)
             save_image(rescale_inv(buffer_sample), 'samples/buf_%s_%d.png' % (args.model_name, task), nrow=8)
@@ -287,9 +287,8 @@ generator.eval()
 
 # optimizers
 classifier = ResNet18(args.n_classes, 20, input_size=args.input_size).to(args.device)
-classifier.train()
 print("number of classifier parameters:", sum([np.prod(p.size()) for p in classifier.parameters()]))
-opt_class = torch.optim.SGD(classifier.parameters(), lr=0.1, momentum=0.9, weight_decay=5e-4)
+opt_class = torch.optim.SGD(classifier.parameters(), lr=args.cls_lr, momentum=0.9)
 task, epoch = 20, -1
 
 # build conveniant valid set
@@ -307,53 +306,21 @@ val_t = torch.cat(val_t)
 valid_ds = torch.utils.data.TensorDataset(val_x, val_y, val_t)
 valid_loader_off = torch.utils.data.DataLoader(valid_ds, batch_size=256, shuffle=True, drop_last=False, num_workers=0)
 
+from torch.nn import BatchNorm2d
+bn = BatchNorm2d(3, momentum=0.9).cuda()
 
 last_valid_acc = 0.
-plt = 0
-##bon
-from PIL import Image
-from torchvision.utils import make_grid
-def topil(tensor, nrow=8, padding=2,
-               normalize=False, range=None, scale_each=False, pad_value=0):
-    tensor = rescale_inv(tensor)
-    grid = make_grid(tensor, nrow=nrow, padding=padding, pad_value=pad_value,
-                     normalize=normalize, range=range, scale_each=scale_each)
-    # Add 0.5 after unnormalizing to [0, 255] to round to nearest integer
-    ndarr = grid.mul_(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to('cpu', torch.uint8).numpy()
-    im = Image.fromarray(ndarr)
-    return im
-import torchvision.transforms as transforms
-normalize = transforms.Normalize(mean=[ 0 , 0, 0],
-                                     std=[0.5671, 0.5696, 0.5461])
-
-apply_aug = transforms.Compose([
-    transforms.Resize(156),
-    transforms.RandomResizedCrop(128),
-    transforms.RandomHorizontalFlip(),
-    transforms.ToTensor(),
-    normalize,
-])
-to_pil_image = transforms.ToPILImage()
-maxval
 while True:
-    if plt == 15:
-        opt_class = torch.optim.SGD(classifier.parameters(), lr=0.05, momentum=0.9, weight_decay=5e-4)
-    elif plt == 25:
-        opt_class = torch.optim.SGD(classifier.parameters(), lr=0.025, momentum=0.9, weight_decay=5e-4)
-    elif plt == 35:
-        opt_class = torch.optim.SGD(classifier.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4)
-    elif plt == 40:
-        break
     tr_num, tr_den = 0, 0
     classifier.train()
-    for _ in range(500):
+    bn.train()
+    for _ in range(100):
+
         input_x, input_y, input_t, _ = generator.sample_from_buffer(128)
-        dat = input_x.data.cpu().numpy()
-        input_x = torch.cat([apply_aug(topil(d)).unsqueeze(0) for d in input_x])
         input_x, input_y, input_t  = input_x.to(args.device), input_y.to(args.device), input_t.to(args.device)
 
         opt_class.zero_grad()
-        logits = classifier(input_x)
+        logits = classifier(bn(input_x))
 
         if args.multiple_heads:
             mask = torch.zeros_like(logits)
@@ -366,19 +333,18 @@ while True:
 
         tr_num += logits.max(dim=-1)[1].eq(input_y).sum().item()
         tr_den += logits.size(0)
-    plt+=1
-    print(plt)
-    print('training acc : {:.4f}'.format(tr_num / tr_den))
 
+    print('training acc : {:.4f}'.format(tr_num / tr_den))
 
     val_num, val_den = 0, 0
     classifier.eval()
+    bn.eval()
     with torch.no_grad():
         for input_x, input_y, input_t in valid_loader_off:
             input_x, input_y, input_t  = input_x.to(args.device), input_y.to(args.device), input_t.to(args.device)
 
             opt_class.zero_grad()
-            logits = classifier(input_x)
+            logits = classifier(bn(input_x))
 
             if args.multiple_heads:
                 mask = torch.zeros_like(logits)
@@ -390,10 +356,8 @@ while True:
             val_num += logits.max(dim=-1)[1].eq(input_y).sum().item()
 
     print('valid acc : {:.4f}'.format(val_num / val_den))
-    if val_num/val_den > maxval:
-        maxval=val_num/val_den
-        torch.save(classifier.state_dict(),args.gen_weights+'.t7')
-eval_cls('test', break_after=-1)
+
+eval_cls('test', break_after=2)
 '''
     valid_acc = eval_cls('valid', break_after=10)
     if valid_acc < last_valid_acc:
