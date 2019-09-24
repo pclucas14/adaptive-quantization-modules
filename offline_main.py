@@ -336,11 +336,11 @@ apply_aug = transforms.Compose([
 to_pil_image = transforms.ToPILImage()
 
 while True:
-    if plt == 10:
+    if plt == 15:
         opt_class = torch.optim.SGD(classifier.parameters(), lr=0.05, momentum=0.9, weight_decay=5e-4)
-    elif plt == 20:
+    elif plt == 25:
         opt_class = torch.optim.SGD(classifier.parameters(), lr=0.025, momentum=0.9, weight_decay=5e-4)
-    elif plt == 30:
+    elif plt == 35:
         opt_class = torch.optim.SGD(classifier.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4)
     tr_num, tr_den = 0, 0
     for _ in range(500):
