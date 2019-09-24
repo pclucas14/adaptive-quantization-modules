@@ -1,0 +1,7 @@
+mem size : mem_size=500	 recon_th :0.0500	 acc 46.2360 += 0.8097	 fgt 42.8162 += 1.3177
+mem size : mem_size=200	 recon_th :0.1000	 acc 39.8700 += 0.8231	 fgt 50.4562 += 1.1424
+mem size : mem_size=500	 recon_th :0.1000	 acc 39.0850 += 1.8248	 fgt 52.9263 += 2.5138
+mem size : mem_size=500	 recon_th :1000.0000	 acc 45.6970 += 0.8489	 fgt 43.8725 += 1.3562
+mem size : mem_size=500	 recon_th :0.0700	 acc 45.7210 += 0.8733	 fgt 42.6500 += 1.2596
+mem size : mem_size=200	 recon_th :100.0000	 acc 40.2280 += 1.1962	 fgt 49.2450 += 1.8095
+mem size : mem_size=500	 recon_th :0.0700	 acc 43.8667 += 0.4294	 fgt 44.4583 += 1.2015
