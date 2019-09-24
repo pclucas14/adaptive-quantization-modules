@@ -15,7 +15,7 @@ from data   import *
 from buffer import *
 from utils  import *
 from args    import get_args
-from offline_modular import QStack, ResNet18
+from modular import QStack, ResNet18
 
 import numpy as np
 np.set_printoptions(threshold=3)
@@ -268,7 +268,7 @@ for run in range(args.n_runs):
                 # -------------------------------------------------------------------------------
                 generator.update_old_decoder()
                 eval_drift(max_task=task)
-                if (task + 1) % 5 ==  0: eval_gen('valid', max_task=task, break_after=2)
+                if task < 4 or (task % 3 == 0): eval_gen('valid', max_task=task, break_after=2)
 
             buffer_sample, by, bt, _ = generator.sample_from_buffer(64)
             save_image(rescale_inv(buffer_sample), 'samples/buf_%s_%d.png' % (args.model_name, task), nrow=8)
@@ -311,6 +311,7 @@ last_valid_acc = 0.
 while True:
     tr_num, tr_den = 0, 0
     for _ in range(100):
+
         input_x, input_y, input_t, _ = generator.sample_from_buffer(128)
         input_x, input_y, input_t  = input_x.to(args.device), input_y.to(args.device), input_t.to(args.device)
 
