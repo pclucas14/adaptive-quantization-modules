@@ -32,7 +32,7 @@ args.model_name = 'EGU{}_NB{}_Comp{}_Coef{:.2f}_{}'.format(args.layers[0].embed_
                                              np.random.randint(10000))
 
 # spawn writer
-log_dir    = join('runs_IM_128', 'test' if args.debug else args.model_name)
+log_dir    = join('runs_IM_128_again', 'test' if args.debug else args.model_name)
 sample_dir = join(log_dir, 'samples')
 writer     = SummaryWriter(log_dir=join(log_dir, 'tf'))
 writer.add_text('hyperparameters', str(args), 0)
@@ -121,12 +121,13 @@ def eval_cls(name, max_task=-1, break_after=-1):
                 logs['acc_%d'  % task_t]    += [(correct / deno).item()]
 
             mean_acc = float(int(1000 * Mean(logs['acc_%d' % task_t]))) / 10.
-            RESULTS[run][0 if name == 'valid' else 1][max_task][task_t] = mean_acc
 
-            print('task %d' % task_t)
+            res_idx = 0 if name == 'valid' else 1
+            RESULTS[run][res_idx][max_task][task_t] = mean_acc
+            #print('task %d' % task_t)
 
-        print(RESULTS[-1, 0, -1], RESULTS[-1, 0, -1].mean())
-        return RESULTS[-1, 0, -1].mean()
+        print(RESULTS[-1, res_idx, -1], RESULTS[-1, res_idx, -1].mean())
+        return RESULTS[-1, res_idx, -1].mean()
 
         """ Logging """
         logs = average_log(logs)
@@ -202,6 +203,13 @@ RESULTS = np.zeros((args.n_runs, 2, args.n_tasks, args.n_tasks))
 
 for run in range(args.n_runs):
 
+    '''
+    try:
+        val_x, val_y, val_t = [torch.load('im_val_data/val_%s.pth' % x) for x in ['x', 'y', 't']]
+    except Exception as e:
+        print(e)
+        val_x = None
+    '''
     # reproducibility
     set_seed(run)
 
@@ -212,12 +220,15 @@ for run in range(args.n_runs):
     train_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True, False, False])]
 
     kwargs = {'all_levels_recon':True}
+    # TODO: put back! only for the joint optim baseline
+    # kwargs = {'all_levels_recon':True, 'inter_level_gradient':True}
 
     # fetch model and ship to GPU
     generator  = QStack(args).to(args.device)
 
     try:
         load_model(generator, args.gen_weights)
+        task, epoch = 20, -1
     except Exception as e:
         print(e, '\n\n')
 
@@ -281,37 +292,21 @@ for run in range(args.n_runs):
         torch.save(generator.state_dict(), save_path)
 
 # for the masks
-loader_cl = train_loader[0]
+#loader_cl = train_loader[0]
 generator.cuda()
 generator.eval()
 
 # optimizers
 classifier = ResNet18(args.n_classes, 20, input_size=args.input_size).to(args.device)
 print("number of classifier parameters:", sum([np.prod(p.size()) for p in classifier.parameters()]))
+print('cls learning rate {:.4f}'.format(args.cls_lr))
 opt_class = torch.optim.SGD(classifier.parameters(), lr=args.cls_lr, momentum=0.9)
-task, epoch = 20, -1
-
-# build conveniant valid set
-val_x, val_y, val_t = [], [], []
-for val_l in valid_loader:
-    for x,y, t in val_l:
-        val_x += [x]
-        val_y += [y]
-        val_t += [t]
-
-val_x = torch.cat(val_x)
-val_y = torch.cat(val_y)
-val_t = torch.cat(val_t)
-
-valid_ds = torch.utils.data.TensorDataset(val_x, val_y, val_t)
-valid_loader_off = torch.utils.data.DataLoader(valid_ds, batch_size=256, shuffle=True, drop_last=False, num_workers=0)
-
 
 last_valid_acc = 0.
 while True:
     tr_num, tr_den = 0, 0
     for _ in range(100):
-
+        classifier = classifier.train()
         input_x, input_y, input_t, _ = generator.sample_from_buffer(128)
         input_x, input_y, input_t  = input_x.to(args.device), input_y.to(args.device), input_t.to(args.device)
 
@@ -330,10 +325,43 @@ while True:
         tr_num += logits.max(dim=-1)[1].eq(input_y).sum().item()
         tr_den += logits.size(0)
 
-    print('training acc : {:.4f}'.format(tr_num / tr_den))
+    tr_acc = tr_num / tr_den
+    print('training acc : {:.4f}'.format(tr_acc))
+    valid_acc = eval_cls('valid')
 
+    if valid_acc > last_valid_acc:
+        save_path = join(log_dir, 'cls.pth')
+        print('saving cls to %s' % save_path)
+        torch.save(classifier.state_dict(), save_path)
+        last_valid_acc = valid_acc
+    elif tr_acc > 0.99:
+        break
+
+'''
+if val_x is None:
+    # make dataloaders
+    train_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True, False, False])]
+    # build conveniant valid set
+    val_x, val_y, val_t = [], [], []
+    for val_l in valid_loader:
+        for x,y, t in val_l:
+            val_x += [x]
+            val_y += [y]
+            val_t += [t]
+
+    val_x = torch.cat(val_x)
+    val_y = torch.cat(val_y)
+    val_t = torch.cat(val_t)
+
+valid_ds = torch.utils.data.TensorDataset(val_x, val_y, val_t)
+valid_loader_off = torch.utils.data.DataLoader(valid_ds, batch_size=256, shuffle=True, drop_last=False, num_workers=0)
+'''
+
+'''
     val_num, val_den = 0, 0
     with torch.no_grad():
+        # TODO: put this back
+        classifier = classifier.eval()
         for input_x, input_y, input_t in valid_loader_off:
             input_x, input_y, input_t  = input_x.to(args.device), input_y.to(args.device), input_t.to(args.device)
 
@@ -349,118 +377,7 @@ while True:
             val_den += logits.size(0)
             val_num += logits.max(dim=-1)[1].eq(input_y).sum().item()
 
-    print('valid acc : {:.4f}'.format(val_num / val_den))
-
-eval_cls('test', break_after=2)
-'''
-    valid_acc = eval_cls('valid', break_after=10)
-    if valid_acc < last_valid_acc:
-        break
-    else:
-        last_valid_acc = valid_acc
-
-eval_cls('test',  break_after=-1)
-np.save(join(log_dir, 'results'), RESULTS)
+        print('valid acc : {:.4f}'.format(val_num / val_den))
+        # eval_cls('test', break_after=-1)
 '''
 
-'''
-# Make train and val splits for the classifier from the generator's buffer.
-generator = generator.cpu()
-data_x, data_y, data_t = generator.sample_EVERYTHING()
-import pdb; pdb.set_trace()
-# shuffle the data
-idx = torch.randperm(data_x.size(0))
-data_x, data_y, data_t = data_x[idx], data_y[idx], data_t[idx]
-
-split = min(500, int(data_x.size(0) * 0.9))
-
-train_x, valid_x = data_x[:split], data_x[split:]
-train_y, valid_y = data_y[:split], data_y[split:]
-train_t, valid_t = data_t[:split], data_t[split:]
-
-train_ds = torch.utils.data.TensorDataset(train_x, train_y, train_t)
-valid_ds = torch.utils.data.TensorDataset(valid_x, valid_y, valid_t)
-
-train_loader_off = torch.utils.data.DataLoader(train_ds, batch_size=32, shuffle=True, drop_last=True,  num_workers=0)
-valid_loader_off = torch.utils.data.DataLoader(valid_ds, batch_size=32, shuffle=True, drop_last=False, num_workers=0)
-
-
-# Starting here we perform the offline eval
-
-# optimizers
-classifier = ResNet18(args.n_classes, 20, input_size=args.input_size).to(args.device)
-opt_class = torch.optim.SGD(classifier.parameters(), lr=args.cls_lr, momentum=0.9)
-
-last_valid_loss = 1e9
-while True:
-    for input_x, input_y, input_t in train_loader_off:
-        input_x, input_y, input_t  = input_x.to(args.device), input_y.to(args.device), input_t.to(args.device)
-
-        opt_class.zero_grad()
-        logits = classifier(input_x)
-
-        if args.multiple_heads:
-            mask = torch.zeros_like(logits)
-            mask.scatter_(1, loader_cl.dataset.task_ids[input_t], 1)
-            logits  = logits.masked_fill(mask == 0, -1e9)
-
-        loss_class = F.cross_entropy(logits, input_y)
-        loss_class.backward()
-        opt_class.step()
-
-    valid_loss, deno = 0., 0
-    with torch.no_grad():
-        for input_x, input_y, input_t in valid_loader_off:
-            input_x, input_y, input_t  = input_x.to(args.device), input_y.to(args.device), input_t.to(args.device)
-
-            opt_class.zero_grad()
-            logits = classifier(input_x)
-
-            if args.multiple_heads:
-                mask = torch.zeros_like(logits)
-                mask.scatter_(1, loader_cl.dataset.task_ids[input_t], 1)
-                logits  = logits.masked_fill(mask == 0, -1e9)
-
-            loss_class = F.cross_entropy(logits, input_y)
-            valid_loss += loss_class.item()
-            deno += 1
-
-    new_valid_loss = valid_loss / deno
-    print('valid loss', new_valid_loss)
-
-    if new_valid_loss < last_valid_loss:
-        last_valid_loss = new_valid_loss
-    else:
-        break
-'''
-
-"""
-
-# Save final results
-acc_avg = RESULTS.mean(axis=0)
-acc_std = RESULTS.std(axis=0)
-
-final_valid = acc_avg[0][-1]
-final_test  = acc_avg[1][-1]
-
-forget = RESULTS.max(axis=2) - RESULTS[:, :, -1, :]
-
-print('final valid:')
-out = ''
-for acc_, std_ in zip(acc_avg[0][-1], acc_std[0][-1]):
-    out += '{:.2f} +- {:.2f}\t'.format(acc_, std_ * 2 / np.sqrt(args.n_runs))
-print(out)
-
-print('{:.2f} +- {:.2f}'.format(RESULTS[:, 0, -1, :].mean(), RESULTS[:, 0, -1, :].std() * 2 / np.sqrt(args.n_runs)))
-print('{:.2f} +- {:.2f}'.format(forget[:, 0, :].mean(), RESULTS[:, 0, :].std() * 2 / np.sqrt(args.n_runs)))
-
-
-print('final test:')
-out = ''
-for acc_, std_ in zip(acc_avg[0][-1], acc_std[0][-1]):
-    out += '{:.2f} +- {:.2f}\t'.format(acc_, std_ * 2 / np.sqrt(args.n_runs))
-print(out)
-
-print('{:.2f} +- {:.2f}'.format(RESULTS[:, 1, -1, :].mean(), RESULTS[:, 1, -1, :].std() * 2 / np.sqrt(args.n_runs)))
-print('{:.2f} +- {:.2f}'.format(forget[:, 1, :].mean(), RESULTS[:, 1, :].std() * 2 / np.sqrt(args.n_runs)))
-"""

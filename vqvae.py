@@ -115,7 +115,7 @@ class Quantize(nn.Module):
             used   = (self.count >  0).nonzero().squeeze()
             unused = (self.count == 0).nonzero().squeeze()
 
-            if len(unused.size()) == 0:
+            if len(unused.size()) == 0 or True:
                 self.unused = None
             else:
                 target = self.embed.data[:, :, :, used]
@@ -144,7 +144,7 @@ class Quantize(nn.Module):
         quantize = quantize.permute(0, 3, 1, 2)
         #test = self.idx_2_hid(embed_ind)
 
-        return quantize, diff, embed_ind, int(self.count.nonzero().size(0))  * 1000 + perplexity
+        return quantize, diff, embed_ind, perplexity
 
 
     def update_unused(self):
@@ -152,8 +152,8 @@ class Quantize(nn.Module):
             return
 
         tgt = self.embed.data.clone()
-        #tgt[:, :, :, self.unused] = self.target
-        tgt[:, :, :, self.unused] = 0.5 * self.target + (1. - 0.5) * tgt[:, :, :, self.unused]
+        tgt[:, :, :, self.unused] = self.target.uniform_(-.02, .02)
+        #tgt[:, :, :, self.unused] = 0.5 * self.target + (1. - 0.5) * tgt[:, :, :, self.unused]
         self.embed.data.copy_(tgt.data)
 
 
@@ -280,18 +280,21 @@ class SoftQuantize(nn.Module):
 
 class GumbelQuantize(nn.Module):
     #def __init__(self, n_classes, decay_rate=0.9, decay_schedule=100, diff_temp=4.):
-    def __init__(self, n_classes, decay_rate=0.9, decay_schedule=1000, diff_temp=4.):
+    def __init__(self, n_classes, decay_rate=(1 - 0.003), decay_schedule=100, diff_temp=4.):
         super().__init__()
 
-        self.temp = diff_temp
+        self.temp = 1. #diff_temp
         self.n_classes = n_classes
-        self.min_temp  = 0.01
+        self.min_temp  = 0.5
         self.decay_rate = decay_rate
         self.decay_schedule = decay_schedule
         self.batch_count = 0
 
 
     def temp_update(self):
+        #TODO: don't hardcode this
+        self.temp = 1.
+        return
         self.batch_count += 1
         if self.batch_count % self.decay_schedule == 0:
             self.temp=max(self.temp*self.decay_rate, self.min_temp)

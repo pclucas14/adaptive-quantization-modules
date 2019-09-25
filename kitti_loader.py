@@ -80,12 +80,13 @@ class Kitti(data.Dataset):
         point_cloud = np.load(self.mapper[index])
         a, b, c = point_cloud.shape
         point_cloud = preprocess(point_cloud.reshape(1, a, b, c))
+
         if self.args.xyz:
             point_cloud = from_polar_np(point_cloud)
 
         out = point_cloud.squeeze()[:, :, ::(self.pre // self.post)]
 
-        return out.astype('float32'), np.array([0])
+        return out.astype('float32'), np.array([0]).squeeze(0), index
 
     def get_og(self, index):
         path = self.mapper[index]

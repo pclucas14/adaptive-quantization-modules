@@ -27,7 +27,7 @@ Mean = lambda x : sum(x) / len(x)
 rescale_inv = (lambda x : x * 0.5 + 0.5)
 
 # spawn writer
-log_dir    = join('final_cifar10', args.model_name)
+log_dir    = join('finalCIF100', args.model_name)
 sample_dir = join(log_dir, 'samples')
 writer     = SummaryWriter(log_dir=join(log_dir, 'tf'))
 
@@ -240,7 +240,7 @@ for run in range(args.n_runs):
 
                 # add compressed rep. to buffer (ONLY during last epoch)
                 if (i+1) % 20 == 0 or (i+1) == len(tr_loader):
-                    generator.log(task, writer=writer, mode='train', should_print=args.print_logs)
+                    generator.log(task, writer=writer, mode='train', should_print='kitti' in args.dataset )#args.print_logs)
 
                 if args.rehearsal:
                     generator.add_reservoir(input_x, input_y, task, idx_)
@@ -256,7 +256,7 @@ for run in range(args.n_runs):
         buffer_sample, by, bt, _ = generator.sample_from_buffer(64)
         save_image(rescale_inv(buffer_sample), 'samples/buf__%s_%d.png' % (args.model_name, task), nrow=8)
 
-    print(RESULTS)
+    print(RESULTS[:, 0, -1].mean(), RESULTS[:, 1, -1].mean())
 
 np.save(join(log_dir, 'results'), RESULTS)
 
