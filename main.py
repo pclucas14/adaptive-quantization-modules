@@ -22,7 +22,7 @@ Mean = lambda x : sum(x) / len(x)
 rescale_inv = (lambda x : x * 0.5 + 0.5)
 
 # spawn writer
-log_dir    = join('runs', args.model_name)
+log_dir    = join('runs_kitti', args.model_name)
 sample_dir = join(log_dir, 'samples')
 writer     = SummaryWriter(log_dir=log_dir)
 
@@ -32,7 +32,7 @@ maybe_create_dir(sample_dir)
 print('logging into %s' % log_dir)
 writer.add_text('hyperparameters', str(args), 0)
 
-def eval(name, max_task=-1):
+def eval(name, max_task=-1, break_after=-1):
     """ evaluate performance on held-out data """
 
     with torch.no_grad():
@@ -44,8 +44,10 @@ def eval(name, max_task=-1):
             if task_t > max_task >= 0:
                 break
 
-            for data, target in te_loader:
+            for i_, (data, target, _) in enumerate(te_loader):
                 data, target = data.to(args.device), target.to(args.device)
+                if i_ > break_after > 0: break
+
                 outs  = generator.reconstruct_all_levels(data)
 
             generator.log(task_t, writer=writer, should_print=True, mode=name)
@@ -69,43 +71,50 @@ def eval(name, max_task=-1):
                     'samples/{}_test_{}_{}.png'.format(args.model_name, task_t, max_task))
 
 
-def eval_drift(real_img, indices):
-    """ evaluate how much the compressed representations deviate from ground truth """
-
-    assert len(real_img) == len(indices) # same amt of tasks
-
+def eval_drift(max_task=-1):
     with torch.no_grad():
-        generator.eval()
 
-        for task_t, (real_data, idx) in enumerate(zip(real_img, indices)):
+        mses = []
+        n_eval = min(1024, generator.all_stored - 10)
 
-            # 1) decode from old indices
-            old_recons = generator.decode_indices(idx)
+        if 'imagenet' in args.dataset or 'kitti' in args.dataset:
+            n_eval = min(n_eval, 64)
 
-            # 2) push the real data through the model to fetch the new argmin indices
-            out = generator(real_data)
-            new_idx = generator.fetch_indices()
+        x, y, t, idx = generator.sample_from_buffer(n_eval)
 
-            # recons and indices are ordered from block T, block T - 1, ... block 1
-            # so we iterate over the blocks in the same order
+        for task, loader in enumerate(train_loader):
+            if task > max_task:
+                break
 
-            for i, block in enumerate(reversed(generator.blocks)):
+            x_t   = x[t == task]
+            y_t   = y[t == task]
+            idx_t = idx[t == task]
 
-                # log the reconstruction error for every block
-                # loss_i = F.mse_loss(old_recons[i], real_data)
-                loss_i = F.mse_loss(old_recons[i], real_data)
-                block.log.log('B%d-Full_recon-drift' % block.id, loss_i)
+            if idx_t.size(0) == 0:
+                mses += [-1.]
+                continue
 
-                # log the relative change in argmin indices
-                cnt, total = 0., 0.
-                for old_idx_ij, new_idx_ij in zip(idx[i], new_idx[i]):
-                    cnt   += (old_idx_ij != new_idx_ij).sum().item()
-                    total += old_idx_ij.numel()
+            if 'imagenet' in args.dataset or 'kitti' in args.dataset:
+                target = [loader.dataset.__getitem__(x.item())[0] for x in idx_t]
+                if 'kitti' in args.dataset:
+                    target = torch.from_numpy(np.stack(target))
+                else:
+                    target = torch.stack(target).to(x_t.device)
+            elif 'cifar' in args.dataset:
+                target = loader.dataset.rescale(loader.dataset.x[idx_t])
 
-                block.log.log('B%d-idx-drift' % block.id, cnt / total)
+            target = target.to(x_t.device)
+            diff = (x_t - target).pow(2).mean(dim=(1,2,3))
+            diff = diff[diff != 0.].mean()
 
-            generator.log(task_t, writer=writer, should_print=True, mode='buffer')
+            # remove nan
+            if diff != diff: diff = torch.Tensor([0.])
 
+            mses += [diff.item()]
+            generator.blocks[0].log.log('drift_mse', F.mse_loss(x_t, target))
+            generator.log(task, writer=writer, mode='buffer', should_print=False)
+
+        print('DRIFT : ', mses, '\n\n')
 
 
 # -------------------------------------------------------------------------------
@@ -123,7 +132,7 @@ if args.optimization == 'global':
 else:
     kwargs = {'all_levels_recon':True}
 
-for run in range(1): #args.n_runs):
+for run in range(args.n_runs):
 
     # reproducibility
     set_seed(args.seed)
@@ -150,11 +159,11 @@ for run in range(1): #args.n_runs):
             generator.train()
             sample_amt = 0
 
-            for i, (input_x, input_y) in enumerate(tr_loader):
+            for i, (input_x, input_y, idx_) in enumerate(tr_loader):
                 if i % 5 == 0 : print('  ', i, ' / ', len(tr_loader) , end='\r')
                 sample_amt += input_x.size(0)
 
-                input_x, input_y = input_x.to(args.device), input_y.to(args.device)
+                input_x, input_y, idx_ = input_x.to(args.device), input_y.to(args.device), idx_.to(args.device)
                 if sample_amt > args.samples_per_task > 0: break
 
                 if task > 0:
@@ -163,7 +172,7 @@ for run in range(1): #args.n_runs):
                 for n_iter in range(args.n_iters):
 
                     if task > 0 and args.rehearsal:
-                        re_x, re_y, re_t = generator.sample_from_buffer(input_x.size(0))
+                        re_x, re_y, re_t, re_idx = generator.sample_from_buffer(input_x.size(0))
                         data_x, data_y = torch.cat((input_x, re_x)), torch.cat((input_y, re_y))
                     else:
                         data_x, data_y = input_x, input_y
@@ -173,51 +182,31 @@ for run in range(1): #args.n_runs):
 
                     if task > 0 and args.rehearsal:
                         # potentially update the indices of `re_x`, or even it's compression level
-                        generator.buffer_update_idx(re_x, re_y, re_t)
+                        generator.buffer_update_idx(re_x, re_y, re_t, re_idx)
 
                 if (i + 1) % 40 == 0 or (i+1) == len(tr_loader):
                     generator.log(task, writer=writer, should_print=True, mode='train')
 
                 if args.rehearsal:
-                    generator.add_reservoir(input_x, input_y, task)
+                    generator.add_reservoir(input_x, input_y, task, idx_)
 
-        generator.eval()
-        generator(input_x)
-        to_be_added = (input_x, generator.fetch_indices())
+            # Test the model
+            # -------------------------------------------------------------------------------
+            generator.update_old_decoder()
+            eval_drift(max_task=task)
+            eval('valid', max_task=task)
 
-        buffer_sample = generator.sample_from_buffer(64)[0]
-        save_image(rescale_inv(buffer_sample), 'samples/%s_buffer_%d.png' % (args.model_name, task), nrow=8)
+            buffer_sample, by, bt, _ = generator.sample_from_buffer(64)
+            if 'kitti' in args.dataset:
+                from kitti_utils import from_polar
+                buffer_sample = buffer_sample[torch.randperm(64)][:12]
+                buffer_sample = (buffer_sample if args.xyz else from_polar(buffer_sample))[:12]
+                np.save(open('lidars/{}_buf{}'.format(args.model_name, task), 'wb'),
+                        buffer_sample.cpu().data.numpy(), allow_pickle=False)
+            else:
+                save_image(rescale_inv(buffer_sample), 'samples/buf_%s_%d.png' % (args.model_name, task), nrow=8)
 
-        if task > 0:
-            if args.update_representations:
-
-                # decode using the old generator, and encode back with new ones
-                new_indices = []
-                for idx in drift_indices:
-                    # TODO: support multi level decoding & re-encoding
-                    old_recon = prev_gen.decode_indices(idx)[-1]
-
-                    generator(old_recon)
-                    new_indices += [generator.fetch_indices()]
-
-                drift_indices = new_indices
-
-            # TODO: put this back
-            #eval_drift(drift_images, drift_indices)
-
-        # store the last minibatch
-        drift_images  += [to_be_added[0]]
-        drift_indices += [to_be_added[1]]
-
-        if args.rehearsal or args.update_representations:
-            argtemp = deepcopy(args)
-            argtemp.rehearsal=False
-            for kk,bloc in enumerate(generator.blocks):
-                argtemp.layers[kk].rehearsal = False
-            prev_gen = QStack(argtemp).to(args.device)
-            prev_gen.load_state_dict(deepcopy(generator.state_dict()),strict=False)
-
-        # evaluate on valid set
-        eval('valid', max_task=task)
-        generator.train()
-        print('\n\n')
+    # save model
+    save_path = join(log_dir, 'gen.pth')
+    print('saving model to %s' % save_path)
+    torch.save(generator.state_dict(), save_path)
