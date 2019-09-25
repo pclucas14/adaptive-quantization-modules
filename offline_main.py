@@ -304,8 +304,7 @@ val_x = torch.cat(val_x)
 val_y = torch.cat(val_y)
 val_t = torch.cat(val_t)
 
-valid_ds = torch.utils.data.TensorDataset(val_x, val_y, val_t)
-valid_loader_off = torch.utils.data.DataLoader(valid_ds, batch_size=256, shuffle=True, drop_last=False, num_workers=0)
+
 
 
 last_valid_acc = 0.
@@ -333,8 +332,17 @@ apply_aug = transforms.Compose([
     transforms.ToTensor(),
     normalize,
 ])
+
+apply_b = transforms.Compose([
+    transforms.ToTensor(),
+    normalize,
+])
 to_pil_image = transforms.ToPILImage()
+from torch.nn import BatchNorm2d
+bn = BatchNorm2d(3, momentum=0.9).cuda()
 maxval = 0
+valid_ds = torch.utils.data.TensorDataset(val_x, val_y, val_t)
+valid_loader_off = torch.utils.data.DataLoader(valid_ds, batch_size=256, shuffle=True, drop_last=False, num_workers=0)
 while True:
     if plt == 15:
         opt_class = torch.optim.SGD(classifier.parameters(), lr=0.05, momentum=0.9, weight_decay=5e-4)
@@ -346,6 +354,7 @@ while True:
         break
     tr_num, tr_den = 0, 0
     classifier.train()
+    bn.train()
     for _ in range(500):
         input_x, input_y, input_t, _ = generator.sample_from_buffer(128)
         dat = input_x.data.cpu().numpy()
@@ -353,7 +362,7 @@ while True:
         input_x, input_y, input_t  = input_x.to(args.device), input_y.to(args.device), input_t.to(args.device)
 
         opt_class.zero_grad()
-        logits = classifier(input_x)
+        logits = classifier(bn(input_x))
 
         if args.multiple_heads:
             mask = torch.zeros_like(logits)
@@ -373,12 +382,13 @@ while True:
 
     val_num, val_den = 0, 0
     classifier.eval()
+    bn.eval()
     with torch.no_grad():
         for input_x, input_y, input_t in valid_loader_off:
             input_x, input_y, input_t  = input_x.to(args.device), input_y.to(args.device), input_t.to(args.device)
-
+            #[normalize(inp) for inp in input_x]
             opt_class.zero_grad()
-            logits = classifier(input_x)
+            logits = classifier(bn(input_x))
 
             if args.multiple_heads:
                 mask = torch.zeros_like(logits)

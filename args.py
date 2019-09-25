@@ -34,7 +34,7 @@ def get_default_layer_args(arglist):
             help="Number of channels for Convolutions, not ResNet")
     add('--num_residual_hiddens', type=int, default = 100,
             help="Number of channels for ResNet")
-    add('--num_residual_layers', type=int, default=2)
+    add('--num_residual_layers', type=int, default=1)
     add('--stride', type=int, nargs='+', default=[2], help='use if strides are uneven across H/W')
     add('--downsample', type=int, default=1, help='downsampling at every layer')
 
@@ -65,7 +65,6 @@ def get_global_args(arglist):
     add('--global_learning_rate', type=float, default=1e-4)
     add('--optimization', type=str, default='blockwise', choices=['blockwise', 'global'])
     add('--name', type=str, default='basic')
-    add('--gen_weights', type=str, default='gen.pth')
 
     add('--num_blocks', type=int, default=1, help='number of QLayers in QStack')
 
@@ -75,7 +74,9 @@ def get_global_args(arglist):
     # Misc
     add('--seed', type=int, default=521)
     add('--debug', action='store_true')
-    add('--recon_th', type=float, default=1e-3, help='satisfying reconstruction threshold')
+    add('--recon_th', type=float, nargs='+', default=[1e-3], help='satisfying reconstruction threshold')
+
+    add('--gen_weights', type=str, default=None)
 
     # From old repo
     add('--max_task', type=int, default=-1)
@@ -86,12 +87,13 @@ def get_global_args(arglist):
     add('--mem_size', type=int, default=600)
     add('--n_classes', type=int, default=100)
     add('--n_runs', type=int, default=1)
+    add('--n_epochs', type=int, default=1)
 
     add('--print_logs', type=int, default=1)
     add('--sunk_cost', action='store_true', help='if true, we do not substract model weights')
 
     # classifier args
-    add('--cls_lr', type=float, default=0.05)
+    add('--cls_lr', type=float, default=0.1)
     add('--cls_n_iters', type=int, default=1)
     add('--test_on_recon', action='store_true')
 
