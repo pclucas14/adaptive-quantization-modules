@@ -25,20 +25,15 @@ print(args)
 
 Mean = lambda x : sum(x) / len(x)
 rescale_inv = (lambda x : x * 0.5 + 0.5)
-args.model_name = 'EGU{}_NB{}_Comp{}_Coef{:.2f}_{}'.format(args.layers[0].embed_grad_update,
-                                                          args.num_blocks,
-                                                          ''.join(['{:.2f}^'.format(args.layers[i].comp_rate) for i in range(args.num_blocks)]),
-                                                          args.layers[0].decay + args.layers[0].commitment_cost,
-                                             np.random.randint(10000))
 
 # spawn writer
-log_dir    = join('runs_IM_128_again', 'test' if args.debug else args.model_name)
-sample_dir = join(log_dir, 'samples')
-writer     = SummaryWriter(log_dir=join(log_dir, 'tf'))
+args.log_dir = join('runs_debug_b2', args.model_name)
+sample_dir   = join(args.log_dir, 'samples')
+writer       = SummaryWriter(log_dir=join(args.log_dir, 'tf'))
 writer.add_text('hyperparameters', str(args), 0)
 
-print_and_save_args(args, join(log_dir, 'args.txt'))
-print('logging into %s' % log_dir)
+print_and_save_args(args, args.log_dir)
+print('logging into %s' % args.log_dir)
 maybe_create_dir(sample_dir)
 best_test = float('inf')
 
@@ -123,10 +118,10 @@ def eval_cls(name, max_task=-1, break_after=-1):
             mean_acc = float(int(1000 * Mean(logs['acc_%d' % task_t]))) / 10.
 
             res_idx = 0 if name == 'valid' else 1
-            RESULTS[run][res_idx][max_task][task_t] = mean_acc
-            #print('task %d' % task_t)
 
-        print(RESULTS[-1, res_idx, -1], RESULTS[-1, res_idx, -1].mean())
+            RESULTS[run][res_idx][max_task][task_t] = mean_acc
+
+        print(RESULTS[-1, res_idx, -1].mean())
         return RESULTS[-1, res_idx, -1].mean()
 
         """ Logging """
@@ -159,10 +154,11 @@ def eval_gen(name, max_task=-1, break_after=-1):
 
             for i_, (data, target, _) in enumerate(te_loader):
                 data, target = data.to(args.device), target.to(args.device)
-                if i_ > break_after > 0: break
 
                 outs = generator.reconstruct_all_levels(data)
-                out = generator(data,    **kwargs)
+                out  = generator(data,    **kwargs)
+
+                if i_ > break_after > 0: break
 
                 logs['mse_%d'  % task_t]    += [F.mse_loss(out, data).item()]
 
@@ -198,44 +194,42 @@ def eval_gen(name, max_task=-1, break_after=-1):
 # Train the model
 # -------------------------------------------------------------------------------
 
-data = locate('data.get_%s' % args.dataset)(args)
-RESULTS = np.zeros((args.n_runs, 2, args.n_tasks, args.n_tasks))
-
 for run in range(args.n_runs):
 
-    '''
-    try:
-        val_x, val_y, val_t = [torch.load('im_val_data/val_%s.pth' % x) for x in ['x', 'y', 't']]
-    except Exception as e:
-        print(e)
-        val_x = None
-    '''
-    # reproducibility
-    set_seed(run)
+    set_seed(args.seed)
 
-    # fetch data
-    data = locate('data.get_%s' % args.dataset)(args)
-
-    # make dataloaders
-    train_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True, False, False])]
 
     kwargs = {'all_levels_recon':True}
-    # TODO: put back! only for the joint optim baseline
-    # kwargs = {'all_levels_recon':True, 'inter_level_gradient':True}
+    if args.optimization == 'global':
+        # flow gradient through blocks when doing global optimization
+        kwargs.update({'inter_level_gradient':True})
 
     # fetch model and ship to GPU
     generator  = QStack(args).to(args.device)
 
     try:
-        load_model(generator, args.gen_weights)
-        task, epoch = 20, -1
+        generator, args = load_model_from_file(args.gen_weights)
+
+        # fetch data
+        data = locate('data.get_%s' % args.dataset)(args)
+
+        # make dataloaders
+        train_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True, False, False])]
+
+        task, epoch = -1, -1
+
     except Exception as e:
         print(e, '\n\n')
 
         print("number of generator  parameters:", sum([np.prod(p.size()) for p in generator.parameters()]))
 
+        # fetch data
+        data = locate('data.get_%s' % args.dataset)(args)
+
+        # make dataloaders
+        train_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True, False, False])]
+
         for task, tr_loader in enumerate(train_loader):
-            if task > 1 and args.debug: break
             for epoch in range(1):
                 generator.train()
                 sample_amt = 0
@@ -279,22 +273,20 @@ for run in range(args.n_runs):
                 # -------------------------------------------------------------------------------
                 generator.update_old_decoder()
                 eval_drift(max_task=task)
-                if task < 4 or (task % 3 == 0): eval_gen('valid', max_task=task, break_after=2)
+                if task < 2 or (task % 7 == 0): eval_gen('valid', max_task=task, break_after=2)
 
             buffer_sample, by, bt, _ = generator.sample_from_buffer(64)
             save_image(rescale_inv(buffer_sample), 'samples/buf_%s_%d.png' % (args.model_name, task), nrow=8)
 
-        print(RESULTS)
-
         # save model
-        save_path = join(log_dir, 'gen.pth')
+        save_path = join(args.log_dir, 'gen.pth')
         print('saving model to %s' % save_path)
         torch.save(generator.state_dict(), save_path)
 
-# for the masks
-#loader_cl = train_loader[0]
 generator.cuda()
 generator.eval()
+
+RESULTS = np.zeros((args.n_runs, 2, args.n_tasks, args.n_tasks))
 
 # optimizers
 classifier = ResNet18(args.n_classes, 20, input_size=args.input_size).to(args.device)
@@ -330,54 +322,19 @@ while True:
     valid_acc = eval_cls('valid')
 
     if valid_acc > last_valid_acc:
-        save_path = join(log_dir, 'cls.pth')
+        save_path = join(args.log_dir, 'cls.pth')
         print('saving cls to %s' % save_path)
         torch.save(classifier.state_dict(), save_path)
         last_valid_acc = valid_acc
     elif tr_acc > 0.99:
         break
 
-'''
-if val_x is None:
-    # make dataloaders
-    train_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True, False, False])]
-    # build conveniant valid set
-    val_x, val_y, val_t = [], [], []
-    for val_l in valid_loader:
-        for x,y, t in val_l:
-            val_x += [x]
-            val_y += [y]
-            val_t += [t]
+# log the last classifier accuracy
+writer.add_scalar('valid_classifier_acc', last_valid_acc, 0)
 
-    val_x = torch.cat(val_x)
-    val_y = torch.cat(val_y)
-    val_t = torch.cat(val_t)
+# make histogram with all the values
+hist = make_histogram(RESULTS[-1, 0, -1], 'Valid Accuracy')
+writer.add_image('Valid. Set Acc', hist, 0)
 
-valid_ds = torch.utils.data.TensorDataset(val_x, val_y, val_t)
-valid_loader_off = torch.utils.data.DataLoader(valid_ds, batch_size=256, shuffle=True, drop_last=False, num_workers=0)
-'''
-
-'''
-    val_num, val_den = 0, 0
-    with torch.no_grad():
-        # TODO: put this back
-        classifier = classifier.eval()
-        for input_x, input_y, input_t in valid_loader_off:
-            input_x, input_y, input_t  = input_x.to(args.device), input_y.to(args.device), input_t.to(args.device)
-
-            opt_class.zero_grad()
-            logits = classifier(input_x)
-
-            if args.multiple_heads:
-                mask = torch.zeros_like(logits)
-                mask.scatter_(1, loader_cl.dataset.task_ids[input_t], 1)
-                logits  = logits.masked_fill(mask == 0, -1e9)
-
-            loss_class = F.cross_entropy(logits, input_y)
-            val_den += logits.size(0)
-            val_num += logits.max(dim=-1)[1].eq(input_y).sum().item()
-
-        print('valid acc : {:.4f}'.format(val_num / val_den))
-        # eval_cls('test', break_after=-1)
-'''
-
+import time
+time.sleep(10)
