@@ -28,8 +28,6 @@ def get_default_layer_args(arglist):
     add('--embed_grad_update', type=int, default=1)
 
     # VQVAE model, defaults like in paper
-    add('--enc_height', type=int, default=8,
-            help="Encoder output size, used for downsampling and KL")
     add('--num_hiddens', type=int, default=100,
             help="Number of channels for Convolutions, not ResNet")
     add('--num_residual_hiddens', type=int, default = 100,
@@ -61,12 +59,17 @@ def get_global_args(arglist):
             help='number of epochs (default: 40)')
     add('--device', type=str, default='cuda')
 
+    # CL specific
+    add('--override_cl_defaults', action='store_true')
+    add('--n_classes_per_task', type=int, default=-1)
+    add('--multiple_heads', type=int, default=-1)
+
     # new ones
     add('--global_learning_rate', type=float, default=1e-4)
     add('--optimization', type=str, default='blockwise', choices=['blockwise', 'global'])
     add('--name', type=str, default='basic')
 
-    add('--num_blocks', type=int, default=1, help='number of QLayers in QStack')
+    add('--num_blocks', type=int, default=0, help='number of QLayers in QStack')
 
     add('--xyz', action='store_true', help='if True, xyz coordinates are used instead of polar')
     add('--from_compressed', type=int, default=1)
@@ -92,6 +95,9 @@ def get_global_args(arglist):
     add('--print_logs', type=int, default=1)
     add('--sunk_cost', action='store_true', help='if true, we do not substract model weights')
 
+    # ablation
+    add('--no_idx_update', action='store_true')
+
     # classifier args
     add('--cls_lr', type=float, default=0.1)
     add('--cls_n_iters', type=int, default=1)
@@ -105,7 +111,7 @@ def get_global_args(arglist):
 def get_args():
     # Assumption 1: specific block parameters are separated by three dashes
     # Assumption 2: specific block parameters are specified AFTER regular args
-    # e.g. python main.py --batch_size 32 --num_blocks 2 ---block_1 --num_hiddens 32 ---block_2 ---enc_height 64
+    # e.g. python main.py --batch_size 32 --num_blocks 2 ---block_1 --num_hiddens 32 ---block_2
 
     layer_flags = [i for i in range(len(sys.argv)) if sys.argv[i].startswith('---layer')]
 
@@ -133,17 +139,19 @@ def get_args():
         global_args.layers[layer_no] = layer_args
 
     # for now let's specify every layer via the command line
-    assert len(layer_flags) == global_args.num_blocks
-    assert len(layer_flags) == len(global_args.recon_th)
+    assert len(layer_flags) == global_args.num_blocks    or global_args.gen_weights
+    assert len(layer_flags) == len(global_args.recon_th) or global_args.gen_weights
 
     assert global_args.cls_n_iters <= global_args.n_iters, 'might as well train gen. model more?'
 
     # we want to know what the compression factor is at every level
     current_shape = global_args.data_size[1:] # e.g. (128, 128)
 
+    fill = lambda x : (str(x) + (20 - len(str(x))) * ' ')[:20]
+    print(fill('INPUT SHAPE'), fill('LATENT SHAPE'), fill('COMP RATE'), 'ARGMIN SHAPE')
+
     # specify remaining args
     for i in range(global_args.num_blocks):
-        input_size = global_args.data_size[0] if i == 0 else global_args.layers[i-1].enc_height
 
         # original code had `i` instead of `i+1` for `global_args` index (I think the latter is correct)
         input_channels = global_args.data_size[0] if i == 0 else global_args.layers[i - 1].embed_dim
@@ -161,6 +169,7 @@ def get_args():
         comp_map = {1:1, 2:1, 4:2}
         per_dim_ds = comp_map[global_args.layers[i].downsample]
 
+        input_shape   = current_shape
         current_shape = (current_shape[0] // (stride[0] ** per_dim_ds),
                          current_shape[1] // (stride[1] ** per_dim_ds))
 
@@ -194,20 +203,29 @@ def get_args():
         if len_stride == 1:
             global_args.layers[i].stride = global_args.layers[i].stride *  2
 
+        print(fill(input_shape), fill(current_shape), fill(global_args.layers[i].comp_rate), argmin_shapes)
+
         # the rest is simply renaming
         global_args.layers[i].channel    = global_args.layers[i].num_hiddens
 
 
     args = global_args
-    args.model_name = 'M:{}_DS:{}_NB:{}_NI:{}_OPT:{}_UR:{}_Re:{}_{}'.format(args.layers[0].model[:5], args.dataset[:10],
-                                                 args.num_blocks, args.n_iters,
-                                                 args.optimization[:5], args.update_representations, args.rehearsal,
-                                                 np.random.randint(10000))
-    args.model_name = 'test' if args.debug else args.model_name
+    if args.gen_weights:
+        model_id = args.gen_weights.split('_')[-1]
+        args.model_name = 'loaded_model_{}'.format(model_id)
+    else:
+        args.model_name = 'DS{}_NB{}_EGU{}_Comp{}_Coef{:.2f}_{}'.format(
+                                args.dataset[-10:],
+                                args.num_blocks,
+                                args.layers[0].embed_grad_update,
+                                ''.join(['{:.2f}^'.format(args.layers[i].comp_rate) for i in range(args.num_blocks)]),
+                                args.layers[0].decay + args.layers[0].commitment_cost,
+                                np.random.randint(10000))
+        args.model_name = 'test' if args.debug else args.model_name
 
     return args
 
 
 def get_debug_args():
-    sys.argv[1:] = ['--num_blocks', '2', '---layer_0', '--enc_height', '64', '--num_embeddings', '100', '--embed_dim', '44', '---layer_1', '--model', 'argmax', '--enc_height', '32', '--num_codebooks', '2', '--quant_size', '2', '1', '--num_embeddings', '100', '--embed_dim', '44']
+    sys.argv[1:] = ['--num_blocks', '2', '---layer_0', '--num_embeddings', '100', '--embed_dim', '44', '---layer_1', '--model', 'argmax', '--num_codebooks', '2', '--quant_size', '2', '1', '--num_embeddings', '100', '--embed_dim', '44']
     return get_args()
