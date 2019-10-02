@@ -22,14 +22,14 @@ Mean = lambda x : sum(x) / len(x)
 rescale_inv = (lambda x : x * 0.5 + 0.5)
 
 # spawn writer
-log_dir    = join('runs_kitti', args.model_name)
-sample_dir = join(log_dir, 'samples')
-writer     = SummaryWriter(log_dir=log_dir)
+args.log_dir = join('runs_kitti_l1', args.model_name)
+sample_dir   = join(args.log_dir, 'samples')
+writer       = SummaryWriter(log_dir=args.log_dir)
 
 print(args)
 best_test = float('inf')
 maybe_create_dir(sample_dir)
-print('logging into %s' % log_dir)
+print('logging into %s' % args.log_dir)
 writer.add_text('hyperparameters', str(args), 0)
 
 def eval(name, max_task=-1, break_after=-1):
@@ -207,6 +207,6 @@ for run in range(args.n_runs):
                 save_image(rescale_inv(buffer_sample), 'samples/buf_%s_%d.png' % (args.model_name, task), nrow=8)
 
     # save model
-    save_path = join(log_dir, 'gen.pth')
+    save_path = join(args.log_dir, 'gen.pth')
     print('saving model to %s' % save_path)
     torch.save(generator.state_dict(), save_path)
