@@ -10,10 +10,12 @@ def get_default_layer_args(arglist):
     parser = argparse.ArgumentParser(description='Vector Quantization')
     add = parser.add_argument
 
+    D = 100
+
     # Quantization settings
     add('--num_codebooks', type=int, default=1,
             help='Number of codebooks')
-    add('--embed_dim', type=int, default=100,
+    add('--embed_dim', type=int, default=D,
             help='Embedding size, `D` in paper')
     add('--num_embeddings', type=int, default=128,
             help='Number of embeddings to choose from, `K` in paper')
@@ -28,9 +30,9 @@ def get_default_layer_args(arglist):
     add('--embed_grad_update', type=int, default=1)
 
     # VQVAE model, defaults like in paper
-    add('--num_hiddens', type=int, default=100,
+    add('--num_hiddens', type=int, default=D,
             help="Number of channels for Convolutions, not ResNet")
-    add('--num_residual_hiddens', type=int, default = 100,
+    add('--num_residual_hiddens', type=int, default = D,
             help="Number of channels for ResNet")
     add('--num_residual_layers', type=int, default=1)
     add('--stride', type=int, nargs='+', default=[2], help='use if strides are uneven across H/W')
@@ -53,6 +55,7 @@ def get_global_args(arglist):
     add('--data_size', type=int, nargs='+', default=(3, 128, 128),
             help='height / width of the input. Note that only Imagenet supports this')
     add('--batch_size', type=int, default=10)
+    add('--buffer_batch_size', type=int, default=-1)
     add('--max_iterations', type=int, default=None,
             help="Max it per epoch, for debugging (default: None)")
     add('--num_epochs', type=int, default=1,
@@ -157,6 +160,15 @@ def get_args():
         input_channels = global_args.data_size[0] if i == 0 else global_args.layers[i - 1].embed_dim
         global_args.layers[i].in_channel = global_args.layers[i].out_channel = input_channels
 
+        '''
+        if global_args.layers[i].model in ['gumbel', 'argmax']:
+            # for these two models, the number of embeddings
+            # is tied to the number of channels
+            print('OVERRIDING n_channels to match number of embeddings')
+            global_args.layers[i].num_hiddens = global_args.layers[i].num_residual_hiddens = \
+                    global_args.layers[i].embed_dim = global_args.layers[i].num_embeddings
+        '''
+
 
         ''' stride '''
         stride = global_args.layers[i].stride
@@ -207,6 +219,10 @@ def get_args():
 
         # the rest is simply renaming
         global_args.layers[i].channel    = global_args.layers[i].num_hiddens
+
+        if global_args.buffer_batch_size < 0:
+            print('setting buffer batch size == batch_size')
+            global_args.buffer_batch_size = global_args.batch_size
 
 
     args = global_args
