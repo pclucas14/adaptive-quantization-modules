@@ -1,23 +1,22 @@
-import argparse
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.distributions as dist
-from os.path import join
-from collections import OrderedDict as OD
-from collections import defaultdict
-from torchvision.utils import save_image
-from tensorboardX import SummaryWriter
-
-from copy   import deepcopy
-from pydoc  import locate
-
-from data   import *
-from buffer import *
-from utils  import *
-from args    import get_args
-from modular import QStack, ResNet18
-
+import sys
 import numpy as np
+from os.path import join
+from pydoc  import locate
+from copy   import deepcopy
+from collections import defaultdict
+from torch.nn import functional as F
+from tensorboardX import SummaryWriter
+from torchvision.utils import save_image
+
+sys.path.append('../')
+from utils.data   import *
+from utils.buffer import *
+from utils.utils  import *
+from utils.args   import get_args
+
+from common.modular import QStack
+from common.model   import ResNet18
+
 np.set_printoptions(threshold=3)
 
 args = get_args()
@@ -172,7 +171,7 @@ def eval_gen(name, max_task=-1, break_after=-1):
                 all_samples = all_samples.view(-1, *data.shape[-3:])
 
                 save_image(rescale_inv(all_samples).view(-1, *args.input_size), \
-                    'samples/{}_test_{}_{}.png'.format(args.model_name, task_t, max_task))
+                    '../samples/{}_test_{}_{}.png'.format(args.model_name, task_t, max_task))
 
         """ Logging """
         logs = average_log(logs)
@@ -211,7 +210,7 @@ for run in range(args.n_runs):
         generator, args = load_model_from_file(args.gen_weights)
 
         # fetch data
-        data = locate('data.get_%s' % args.dataset)(args)
+        data = locate('utils.data.get_%s' % args.dataset)(args)
 
         # make dataloaders
         train_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True, False, False])]
@@ -224,7 +223,7 @@ for run in range(args.n_runs):
         print("number of generator  parameters:", sum([np.prod(p.size()) for p in generator.parameters()]))
 
         # fetch data
-        data = locate('data.get_%s' % args.dataset)(args)
+        data = locate('utils.data.get_%s' % args.dataset)(args)
 
         # make dataloaders
         train_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True, False, False])]
@@ -248,7 +247,7 @@ for run in range(args.n_runs):
                     for n_iter in range(args.n_iters):
 
                         if task > 0 and args.rehearsal:
-                            re_x, re_y, re_t, re_idx = generator.sample_from_buffer(input_x.size(0))
+                            re_x, re_y, re_t, re_idx = generator.sample_from_buffer(args.buffer_batch_size)
                             data_x, data_y = torch.cat((input_x, re_x)), torch.cat((input_y, re_y))
                         else:
                             data_x, data_y = input_x, input_y
@@ -276,7 +275,7 @@ for run in range(args.n_runs):
                 if task < 2 or (task % 7 == 0): eval_gen('valid', max_task=task, break_after=2)
 
             buffer_sample, by, bt, _ = generator.sample_from_buffer(64)
-            save_image(rescale_inv(buffer_sample), 'samples/buf_%s_%d.png' % (args.model_name, task), nrow=8)
+            save_image(rescale_inv(buffer_sample), '../samples/buf_%s_%d.png' % (args.model_name, task), nrow=8)
 
         # save model
         save_path = join(args.log_dir, 'gen.pth')
