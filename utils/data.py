@@ -107,8 +107,8 @@ def get_split_cifar10(args):
         raise NotImplementedError
 
     # fetch MNIST
-    train = datasets.CIFAR10('../cl-pytorch/data/', train=True,  download=True)
-    test  = datasets.CIFAR10('../cl-pytorch/data/', train=False, download=True)
+    train = datasets.CIFAR10('../../cl-pytorch/data/', train=True,  download=True)
+    test  = datasets.CIFAR10('../../cl-pytorch/data/', train=False, download=True)
 
     train_x, train_y = train.data, train.targets
     test_x,  test_y  = test.data,  test.targets
@@ -176,8 +176,8 @@ def get_split_cifar100(args):
         args.n_classes_per_task = 5
 
     # fetch data
-    train = datasets.CIFAR100('../cl-pytorch/data/', train=True,  download=True)
-    test  = datasets.CIFAR100('../cl-pytorch/data/', train=False, download=True)
+    train = datasets.CIFAR100('../../cl-pytorch/data/', train=True,  download=True)
+    test  = datasets.CIFAR100('../../cl-pytorch/data/', train=False, download=True)
 
     train_x, train_y = train.data, train.targets
     test_x,  test_y  = test.data,  test.targets
@@ -273,8 +273,8 @@ def get_split_cifar100(args):
 def get_miniimagenet(args):
     ROOT_PATH = '/home/eugene/data/filelists/miniImagenet/materials/images'
     ROOT_PATH_CSV = '/home/eugene/data/filelists/miniImagenet/materials'
-    ROOT_PATH = '../cl-pytorch/data/imagenet/imagenet_images'
-    ROOT_PATH_CSV = '../prototypical-network-pytorch/materials'
+    ROOT_PATH = '../../cl-pytorch/data/imagenet/imagenet_images'
+    ROOT_PATH_CSV = '../../prototypical-network-pytorch/materials'
 
     size = args.data_size[-1]
     args.n_classes = 100
