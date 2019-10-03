@@ -1,11 +1,13 @@
-import utils
+import os
 import torch
 from torch import nn
 from copy import deepcopy
 from torch.nn import functional as F
 
-from buffer import *
-from vqvae  import Quantize, GumbelQuantize, AQuantize, Encoder, Decoder
+from utils.utils     import RALog, make_histogram
+from utils.buffer    import *
+from common.quantize import Quantize, GumbelQuantize, AQuantize
+from common.model    import Encoder, Decoder
 
 from torchvision.utils import save_image
 from PIL import Image
@@ -23,7 +25,7 @@ class QLayer(nn.Module):
 
         self.id      = id
         self.args    = args
-        self.log     = utils.RALog()
+        self.log     = RALog()
 
         # build networks
         self.encoder = Encoder(args)
@@ -285,7 +287,11 @@ class QLayer(nn.Module):
         # TODO: should we weight these differently ?
         diffs = sum(self.diffs) / len(self.diffs)
         recon = F.mse_loss(self.output, target)
-        #recon = F.l1_loss(self.output, target)
+
+        # TODO: change that
+        # recon = F.l1_loss(self.output, target)
+        # recon = (self.output - target).abs().sum(dim=(1,2,3)).mean(dim=0)
+        # import pdb; pdb.set_trace()
 
         self.recon = recon.item()
         if not kwargs.get('no_log', False):
@@ -323,6 +329,7 @@ class QStack(nn.Module):
 
         if args.rehearsal:
             mem_size  = args.mem_size * np.prod(args.data_size)
+
             if not args.sunk_cost:
                 mem_size -= sum(p.numel() for p in self.parameters())
 
@@ -413,14 +420,22 @@ class QStack(nn.Module):
         delete_idx = self.sampled_indices[(pre_block_id == 0) * (new_block_id > 0)]
         self.reg_buffer.free(idx=delete_idx)
 
-        # Note: nothing to update for real data
+        # monitor what happens
+        same_lvl_amt = (pre_block_id == new_block_id).sum()
+        jump01_amt   = ((pre_block_id == 0) * (new_block_id == 1)).sum()
+        jump12_amt   = ((pre_block_id == 1) * (new_block_id == 2)).sum()
+
+        self.blocks[0].log.log('same_lvl', same_lvl_amt, per_task=False)
+        self.blocks[0].log.log('jump01', jump01_amt, per_task=False)
+        self.blocks[0].log.log('jump12', jump12_amt, per_task=False)
 
         for i, block in enumerate(self.blocks):
 
-            # 1) update stale representations
-            update_mask = (pre_block_id == (i+1)) * (new_block_id == (i+1))
-            update_idx  = self.sampled_indices[update_mask]
-            block.update_buffer(update_idx, argmin_idx=update_mask, last_n=re_x.size(0))
+            if not self.args.no_idx_update:
+                # 1) update stale representations
+                update_mask = (pre_block_id == (i+1)) * (new_block_id == (i+1))
+                update_idx  = self.sampled_indices[update_mask]
+                block.update_buffer(update_idx, argmin_idx=update_mask, last_n=re_x.size(0))
 
             # 2) delete representations that will be further compressed
             delete_mask = (pre_block_id == (i+1)) * (new_block_id > (i+1))
@@ -445,6 +460,7 @@ class QStack(nn.Module):
         probs = torch.Tensor([self.reg_stored] + [x.n_samples for x in self.blocks])
         probs = probs / probs.sum()
         samples_per_block = (probs * n_samples).floor()
+
 
         #TODO: this will throw an error if no samples are stored in full resolution
         missing = n_samples - samples_per_block.sum()
@@ -569,6 +585,11 @@ class QStack(nn.Module):
             # which should make things less biased.
             idx_new_data = valid_indices.nonzero().squeeze(-1)
 
+            '''
+            if self.blocks[0].buffer[0].n_samples > 100:
+                import pdb; pdb.set_trace()
+            '''
+
             # now that we know which samples will be added, we need to check
             # which rep / compression rate will be used.
 
@@ -579,10 +600,6 @@ class QStack(nn.Module):
 
             # now that we know which samples will be added to the buffer,
             # we need to find the most compressed representation that is good enough
-
-            # per_block_l1 = (x.unsqueeze(0) - target).abs()
-            # per_block_l1 = per_block_l1.mean(dim=(2,3,4))
-            # block_id = (per_block_l1 < self.args.recon_th).sum(dim=0)
 
             per_block_l2 = (x.unsqueeze(0) - target).pow(2)
             per_block_l2 = per_block_l2.mean(dim=(2,3,4))
@@ -638,23 +655,30 @@ class QStack(nn.Module):
                 block.log.log('buffer-samples-B%d' % block.id, block.n_samples, per_task=False)
 
             block.log.log('buffer_samples-reg', self.reg_stored, per_task=False)
-            # block.log.log('buffer-mem', self.mem_used, per_task=False)
-            # block.log.log('n_seen_so_far', self.n_seen_so_far, per_task=False)
+            block.log.log('buffer-mem', self.mem_used, per_task=False)
+            block.log.log('n_seen_so_far', self.n_seen_so_far, per_task=False)
 
-            """ Monitor label distribution in buffers """
-            hist = torch.zeros(self.args.n_classes).long()
 
-            hist += self.reg_buffer.y.sum(dim=0).cpu()
+    def log_buffer(self):
+        """ Monitor label distribution in buffers """
 
-            # add the labels for all buffer levels
-            for block in self.blocks:
-                if block.n_samples > 0:
-                    hist += block.buffer[0].y.sum(dim=0).cpu()
+        hist = torch.zeros(self.args.n_classes).long()
 
-            hist = hist.float()
-            hist = hist / hist.sum()
+        hist += self.reg_buffer.y.sum(dim=0).cpu()
 
-            block.log.log('buffer-y-dist', hist, per_task=False)
+        self.blocks[0].log.log('buffer-y-count-REG', hist.clone(), per_task=False)
+
+        # add the labels for all buffer levels
+        for block in self.blocks:
+            if block.n_samples > 0:
+                block_hist = block.buffer[0].y.sum(dim=0).cpu()
+                block.log.log('buffer-y-count-B%d' % block.id, block_hist, per_task=False)
+                hist += block_hist
+
+        hist = hist.float()
+        hist = hist / hist.sum()
+
+        block.log.log('buffer-y-dist', hist, per_task=False)
 
 
     def up(self, x, **kwargs):
@@ -812,6 +836,9 @@ class QStack(nn.Module):
     def log(self, task, writer=None, should_print=False, mode='train'):
         """ Logs the results """
 
+        # get buffer informations
+        self.log_buffer()
+
         if writer is not None:
             for block in self.blocks:
                 for name, value in block.log.storage.items():
@@ -822,7 +849,10 @@ class QStack(nn.Module):
                         suffix = ''
 
                     if type(value) == np.ndarray:
-                        writer.add_histogram(prefix + name + suffix, value, self.log_step)
+                        # Tensorboard's histogram is awful. Let's make an image instead
+                        tmp_path = os.path.join(self.args.log_dir, 'tmp.png')
+                        hist = make_histogram(value, prefix + name + suffix, tmp_path=tmp_path)
+                        writer.add_image(prefix + name + suffix, hist, self.log_step)
                     else:
                         writer.add_scalar(prefix + name + suffix, value, self.log_step)
 
@@ -837,211 +867,6 @@ class QStack(nn.Module):
         # reset logs
         for block in self.blocks:
             block.log.reset()
-
-
-    def calc_grad_var(self, input, **kwargs):
-        """ Estimate the variance of the gradient along the batch axis """
-
-        assert self.args.optimization == 'blockwise', 'No global opt for now'
-
-        for i, input_i in enumerate(input):
-            # We have to go 1 example at a time, as gradient is acc. over
-            # batch axis by default
-            input_i   = input_i.unsqueeze(0)
-            x_prime_i = self.forward(input_i)
-
-            for j, block in enumerate(self.blocks):
-                target_j = input_i if j == 0 else self.blocks[j-1].z_q
-                recon, diff = block.loss(target_j.detach(), **kwargs)
-                loss = recon + block.args.commitment_cost * diff
-
-                block.opt.zero_grad()
-                loss.backward()
-
-                per_block_sum, per_block_cnt = 0., 0.
-                for p in list(filter(lambda p: p.grad is not None, block.parameters())):
-                    if i == 0:
-                        p.grad_mu  = deepcopy(p.grad.data)
-                        p.grad_std = deepcopy(p.grad.data).data.fill_(0.)
-                    else:
-                        prev_mu = deepcopy(p.grad_mu)
-                        p.grad_mu.data.add_ ( (p.grad.data - p.grad_mu) / (i+1) )
-                        p.grad_std.data.add_( (p.grad.data - prev_mu) * (p.grad.data - p.grad_mu))
-
-                    if (i + 1) == input.size(0):
-                        # last example --> log
-                        per_block_sum += p.grad_std.sum()
-                        per_block_cnt += p.grad_std.numel()
-
-                if (i + 1) == input.size(0):
-                    block.log.log('grad_var-B%d' % block.id, per_block_sum / per_block_cnt * 1000., per_task=False)
-
-# Classifiers
-# -----------------------------------------------------------------------------------
-
-def conv3x3(in_planes, out_planes, stride=1):
-    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
-                     padding=1, bias=False)
-
-class BasicBlock(nn.Module):
-    expansion = 1
-
-    def __init__(self, in_planes, planes, stride=1):
-        super(BasicBlock, self).__init__()
-        self.conv1 = conv3x3(in_planes, planes, stride)
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = conv3x3(planes, planes)
-        self.bn2 = nn.BatchNorm2d(planes)
-
-        self.shortcut = nn.Sequential()
-        if stride != 1 or in_planes != self.expansion * planes:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1,
-                          stride=stride, bias=False),
-                nn.BatchNorm2d(self.expansion * planes)
-            )
-
-    def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        out += self.shortcut(x)
-        out = F.relu(out)
-        return out
-
-'''
-class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes, nf, in_size=(3,128,128), compressed = False):
-        super(ResNet, self).__init__()
-        self.in_planes = nf
-        self.compressed = compressed
-        self.start_size = in_size
-
-        if self.compressed:
-            self.conv1 = nn.Conv2d(in_size[0], nf, kernel_size=1, stride=1,
-                                   padding=0, bias=False)
-            self.bn1 = nn.BatchNorm2d(nf * 1)
-        else:
-            self.conv1 = nn.Conv2d(3, nf, kernel_size=7, stride=3,
-                         padding=1, bias=False)
-            self.bn1 = nn.BatchNorm2d(nf * 1)
-        self.layer1 = self._make_layer(block, nf * 1, num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(block, nf * 2, num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(block, nf * 4, num_blocks[2], stride=2)
-        self.layer4 = self._make_layer(block, nf * 8, num_blocks[3], stride=2)
-        self.linear = nn.Linear(nf * 8 * block.expansion, num_classes)
-
-    def _make_layer(self, block, planes, num_blocks, stride):
-        strides = [stride] + [1] * (num_blocks - 1)
-        layers = []
-        for stride in strides:
-            layers.append(block(self.in_planes, planes, stride))
-            self.in_planes = planes * block.expansion
-        return nn.Sequential(*layers)
-
-    def return_hidden(self, x):
-        bsz = x.size(0)
-        out = F.relu(self.bn1(self.conv1(x.view(bsz, *self.start_size))))
-        out = self.layer1(out)
-        out = self.layer2(out)
-        out = self.layer3(out)
-        out = self.layer4(out)
-        out = F.adaptive_avg_pool2d(out, (1,1))
-        out = out.view(out.size(0), -1)
-        return out
-
-    def forward(self, x):
-        out = self.return_hidden(x)
-        out = self.linear(out)
-        return out
-
-def ResNet18(nclasses, nf=100, in_size=(3,128,128),compressed=False):
-    return ResNet(BasicBlock, [2, 2, 2, 2], nclasses, nf, in_size, compressed=compressed)
-'''
-
-# Classifiers
-# -----------------------------------------------------------------------------------
-
-def conv3x3(in_planes, out_planes, stride=1):
-    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
-                     padding=1, bias=False)
-
-
-class BasicBlock(nn.Module):
-    expansion = 1
-
-    def __init__(self, in_planes, planes, stride=1):
-        super(BasicBlock, self).__init__()
-        self.conv1 = conv3x3(in_planes, planes, stride)
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = conv3x3(planes, planes)
-        self.bn2 = nn.BatchNorm2d(planes)
-
-        self.shortcut = nn.Sequential()
-        if stride != 1 or in_planes != self.expansion * planes:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1,
-                          stride=stride, bias=False),
-                nn.BatchNorm2d(self.expansion * planes)
-            )
-
-    def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        out += self.shortcut(x)
-        out = F.relu(out)
-        return out
-
-
-
-class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes, nf, input_size):
-        super(ResNet, self).__init__()
-        self.in_planes = nf
-        self.input_size = input_size
-
-        self.conv1 = conv3x3(input_size[0], nf * 1)
-        self.bn1 = nn.BatchNorm2d(nf * 1)
-        #self.bn1  = CategoricalConditionalBatchNorm(nf, 2)
-        self.layer1 = self._make_layer(block, nf * 1, num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(block, nf * 2, num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(block, nf * 4, num_blocks[2], stride=2)
-        self.layer4 = self._make_layer(block, nf * 8, num_blocks[3], stride=2)
-
-        # hardcoded for now
-        print(input_size[1])
-        last_hid = nf * 8 * block.expansion if input_size[1] in [4,8,16,21,32] else 2560
-        self.linear = nn.Linear(last_hid, num_classes)
-        #self.linear = distLinear(last_hid, num_classes)
-
-    def _make_layer(self, block, planes, num_blocks, stride):
-        strides = [stride] + [1] * (num_blocks - 1)
-        layers = []
-        for stride in strides:
-            layers.append(block(self.in_planes, planes, stride))
-            self.in_planes = planes * block.expansion
-        return nn.Sequential(*layers)
-
-    def return_hidden(self, x):
-        bsz = x.size(0)
-        #pre_bn = self.conv1(x.view(bsz, 3, 32, 32))
-        #post_bn = self.bn1(pre_bn, 1 if is_real else 0)
-        #out = F.relu(post_bn)
-        out = F.relu(self.bn1(self.conv1(x.view(bsz, *self.input_size))))
-        out = self.layer1(out)
-        out = self.layer2(out)
-        out = self.layer3(out)
-        out = self.layer4(out)
-        out = F.avg_pool2d(out, 4)
-        out = out.view(out.size(0), -1)
-        return out
-
-    def forward(self, x):
-        out = self.return_hidden(x)
-        out = self.linear(out)
-        return out
-
-def ResNet18(nclasses, nf=20, input_size=(3, 32, 32)):
-    return ResNet(BasicBlock, [2, 2, 2, 2], nclasses, nf, input_size)
 
 
 
