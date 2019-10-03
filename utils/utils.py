@@ -10,10 +10,14 @@ from collections import OrderedDict as OD
 from collections import defaultdict as DD
 from addict import Dict
 from copy import deepcopy
-from argparse import Namespace
+from PIL import Image
+
+import matplotlib.mlab as mlab
+import matplotlib.pyplot as plt
 
 # good'ol utils
 # ---------------------------------------------------------------------------------
+
 class RALog():
     """ keeps track of running averages of values """
 
@@ -31,7 +35,7 @@ class RALog():
         for key, value in self.storage.items():
             out += fill(key, 20)
             if type(value) == np.ndarray:
-                out += str(value) #[:np.argwhere(value == 0)[0][0]])
+                out += str(value)
             else:
                 out += '{:.4f}\t'.format(value)
         return out
@@ -53,42 +57,6 @@ class RALog():
             self.storage[key] = (prev * cnt  + value) / (cnt + 1.)
             self.count[key] += 1
 
-
-class dotdict(dict):
-    __getattr__ = dict.get
-    __setattr__ = dict.__setitem__
-    __delattr__ = dict.__delitem__
-
-
-def print_and_save_args(args, path):
-    print(str(args), file=open(path, 'w'))
-
-def load_model_from_file(path):
-    with open(os.path.join(path, 'args.json'), 'rb') as f:
-        args = dotdict(json.load(f))
-
-    from vqvae import VQVAE
-    # create model
-    model = VQVAE(args)
-
-    # load weights
-    model.load_state_dict(torch.load(os.path.join(path, 'best_model.pth')))
-
-    return model
-
-
-def set_seed(seed):
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-
-def maybe_create_dir(path):
-    if not os.path.exists(path):
-        os.makedirs(path)
-
-
 def average_log(dic):
 
     keys = dic.keys()
@@ -105,16 +73,95 @@ def average_log(dic):
                 current[task] = sum([x for x in dic[key]]) / len(dic[key])
         avgs[super_key] = current
 
-        '''
-        avg = 0.
-        for key in current.keys():
-            avg += current[key]
-        avg /= len(current.keys())
-
-        avgs[super_key] = avg
-        '''
-
     return avgs
+
+
+def make_histogram(values, title, tmp_path='tmp.png'):
+    plt.clf()
+    max_idx = np.argwhere(values > 0)
+
+    if max_idx.shape[0] > 0:
+        max_idx = max_idx.max()
+    else:
+        max_idx = values.shape[0]
+
+    values = values[:max_idx]
+
+    plt.bar(np.arange(values.shape[0]), values)
+
+    plt.title(title)
+    plt.grid(True)
+
+    plt.savefig(tmp_path, quality=10)
+
+    np_img = np.array(Image.open(tmp_path))[:, :, :3]
+    return np_img.transpose(2, 0, 1)
+
+
+class dotdict(dict):
+    __getattr__ = dict.get
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
+
+
+def save_args(args, path):
+    c_args = vars(deepcopy(args))
+
+    # 1) convert all nested (1st level) dics to namespaces
+    n_layers = len(args.layers)
+
+    for layer_idx in range(n_layers):
+        c_args['layers'][layer_idx] = vars(deepcopy(args.layers[layer_idx]))
+
+    with open(os.path.join(path, 'args.json'), 'w') as f:
+        json.dump(c_args, f)
+
+
+def load_args(path):
+    with open(os.path.join(path, 'args.json'), 'r') as f:
+        args_dict = json.load(f)
+
+    # 1) convert all nested (1st level) dics to namespaces
+    n_layers = len(args_dict['layers'])
+
+    dot_args = dotdict(args_dict)
+
+    dot_args.layers = {}
+
+    for layer_idx in range(n_layers):
+        dot_args.layers[layer_idx] = dotdict(args_dict['layers'][str(layer_idx)])
+
+    return dot_args
+
+
+def print_and_save_args(args, path):
+    print(args)
+    save_args(args, path)
+
+
+def load_model_from_file(path):
+    old_args = load_args(path)
+
+    from modular import QStack
+
+    # create model
+    model = QStack(old_args)
+
+    load_model(model, os.path.join(path, 'gen.pth'))
+
+    return model, old_args
+
+
+def set_seed(seed):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def maybe_create_dir(path):
+    if not os.path.exists(path):
+        os.makedirs(path)
 
 
 def load_model(model, path):
@@ -132,8 +179,10 @@ def load_model(model, path):
 
     model.load_state_dict(params)
 
+
 # loss functions
 # ---------------------------------------------------------------------------------
+
 def logistic_ll(mean, logscale, sample, binsize=1 / 256.0):
     # actually discretized logistic, but who cares
     scale = torch.exp(logscale)
@@ -148,8 +197,6 @@ def gaussian_ll(mean, logscale, sample):
     return logp.sum(dim=(1,2,3))
 
 
-
-
 if __name__ == '__main__':
-    dd = Log()
+    model = load_model_from_file('runs_rebuttal/EGU0_NB2_Comp13.71^27.43^_Coef2.60_4429')
     import pdb; pdb.set_trace()
