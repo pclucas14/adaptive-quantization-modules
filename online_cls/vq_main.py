@@ -1,23 +1,22 @@
-import argparse
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.distributions as dist
-from os.path import join
-from collections import OrderedDict as OD
-from collections import defaultdict
-from torchvision.utils import save_image
-from tensorboardX import SummaryWriter
-
-from copy   import deepcopy
-from pydoc  import locate
-
-from data   import *
-from buffer import *
-from utils  import *
-from args    import get_args
-from modular import QStack, ResNet18
-
+import sys
 import numpy as np
+from os.path import join
+from pydoc  import locate
+from copy   import deepcopy
+from collections import defaultdict
+from torch.nn import functional as F
+from tensorboardX import SummaryWriter
+from torchvision.utils import save_image
+
+sys.path.append('../')
+from utils.data   import *
+from utils.buffer import *
+from utils.utils  import *
+from utils.args   import get_args
+
+from common.modular import QStack
+from common.model   import ResNet18
+
 np.set_printoptions(threshold=3)
 
 args = get_args()
@@ -27,12 +26,12 @@ Mean = lambda x : sum(x) / len(x)
 rescale_inv = (lambda x : x * 0.5 + 0.5)
 
 # spawn writer
-log_dir    = join('finalCIF100', args.model_name)
-sample_dir = join(log_dir, 'samples')
-writer     = SummaryWriter(log_dir=join(log_dir, 'tf'))
+args.log_dir = join('runs', args.model_name)
+sample_dir   = join(args.log_dir, 'samples')
+writer       = SummaryWriter(log_dir=join(args.log_dir, 'tf'))
 
-print_and_save_args(args, join(log_dir, 'args.txt'))
-print('logging into %s' % log_dir)
+print_and_save_args(args, args.log_dir)
+print('logging into %s' % args.log_dir)
 maybe_create_dir(sample_dir)
 best_test = float('inf')
 
@@ -68,7 +67,8 @@ def eval_drift(max_task=-1):
                 target = [loader.dataset.__getitem__(x.item())[0] for x in idx_t]
                 target = torch.stack(target).to(x_t.device)
             else:
-                target = loader.dataset.rescale(loader.dataset.x[idx_t]).to(x_t.device)
+                target = loader.dataset.rescale(loader.dataset.x[idx_t])
+                target = target.to(x_t.device)
 
             diff = (x_t - target).pow(2).mean(dim=(1,2,3))
             diff = diff[diff != 0.].mean()
@@ -78,7 +78,8 @@ def eval_drift(max_task=-1):
 
             mses += [diff.item()]
             generator.blocks[0].log.log('drift_mse', F.mse_loss(x_t, target))
-            generator.log(task, writer=writer, mode='buffer', should_print=args.print_logs)
+            generator.log(task, writer=writer, mode='buffer', \
+                    should_print=args.print_logs)
 
         print('DRIFT : ', mses, '\n\n')
 
@@ -108,7 +109,7 @@ def eval(name, max_task=-1):
                     logits = classifier(data)
 
                 if args.multiple_heads:
-                    logits = logits.masked_fill(te_loader.dataset.mask == 0, -1e9)
+                    logits = logits.masked_fill(te_loader.dataset.mask==0, -1e9)
 
                 pred = logits.argmax(dim=1, keepdim=True)
                 correct = pred.eq(target.view_as(pred)).sum().float()
@@ -121,7 +122,9 @@ def eval(name, max_task=-1):
             RESULTS[run][0 if name == 'valid' else 1][max_task][task_t] = mean_acc
 
             print('task %d' % task_t)
-            generator.log(task_t, writer=writer, mode=name, should_print=args.print_logs)
+            generator.log(task_t, writer=writer, mode=name, \
+                    should_print=args.print_logs)
+
             if max_task >= 0:
                 outs += [data]
                 all_samples = torch.stack(outs)             # L, bs, 3, 32, 32
@@ -129,8 +132,9 @@ def eval(name, max_task=-1):
                 all_samples = all_samples.contiguous()      # bs, L, 3, 32, 32
                 all_samples = all_samples.view(-1, *data.shape[-3:])
 
-                save_image(rescale_inv(all_samples).view(-1, *args.input_size), \
-                    'samples/{}_test_{}_{}.png'.format(args.model_name, task_t, max_task))
+                save_image(rescale_inv(all_samples).view(-1, *args.input_size),\
+                    '../samples/{}_test_{}_{}.png'.format(args.model_name,
+                                                          task_t, max_task))
 
         """ Logging """
         logs = average_log(logs)
@@ -148,11 +152,11 @@ def eval(name, max_task=-1):
 
 
 
-# -------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Train the model
-# -------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 
-data = locate('data.get_%s' % args.dataset)(args)
+data = locate('utils.data.get_%s' % args.dataset)(args)
 RESULTS = np.zeros((args.n_runs, 2, args.n_tasks, args.n_tasks))
 
 for run in range(args.n_runs):
@@ -161,22 +165,29 @@ for run in range(args.n_runs):
     set_seed(run)
 
     # fetch data
-    data = locate('data.get_%s' % args.dataset)(args)
+    data = locate('utils.data.get_%s' % args.dataset)(args)
 
     # make dataloaders
-    train_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True, False, False])]
+    train_loader, valid_loader, test_loader  = [
+            CLDataLoader(elem, args, train=t) for elem, t in \
+                    zip(data, [True, False, False])
+    ]
 
     kwargs = {'all_levels_recon':True}
 
     # fetch model and ship to GPU
     generator  = QStack(args).to(args.device)
-    classifier = ResNet18(args.n_classes, 20, input_size=args.input_size).to(args.device)
+    classifier = ResNet18(args.n_classes, 20, input_size=args.input_size)
+    classifier = classifier.to(args.device)
+    print(generator)
 
     # optimizers
     opt_class = torch.optim.SGD(classifier.parameters(), lr=args.cls_lr)
 
-    print("number of generator  parameters:", sum([np.prod(p.size()) for p in generator.parameters()]))
-    print("number of classifier parameters:", sum([np.prod(p.size()) for p in classifier.parameters()]))
+    print("number of generator  parameters:", \
+            sum([np.prod(p.size()) for p in generator.parameters()]))
+    print("number of classifier parameters:", \
+            sum([np.prod(p.size()) for p in classifier.parameters()]))
 
     for task, tr_loader in enumerate(train_loader):
 
@@ -194,13 +205,18 @@ for run in range(args.n_runs):
                 if sample_amt > args.samples_per_task > 0: break
                 sample_amt += input_x.size(0)
 
-                input_x, input_y, idx_ = input_x.to(args.device), input_y.to(args.device), idx_.to(args.device)
+                input_x = input_x.to(args.device)
+                input_y = input_y.to(args.device)
+                idx_    = idx_.to(args.device)
 
                 for n_iter in range(args.n_iters):
 
                     if task > 0 and args.rehearsal:
-                        re_x, re_y, re_t, re_idx = generator.sample_from_buffer(input_x.size(0))
-                        data_x, data_y = torch.cat((input_x, re_x)), torch.cat((input_y, re_y))
+                        re_x, re_y, re_t, re_idx = \
+                                generator.sample_from_buffer(input_x.size(0))
+
+                        data_x = torch.cat((input_x, re_x))
+                        data_y = torch.cat((input_y, re_y))
                     else:
                         data_x, data_y = input_x, input_y
 
@@ -208,7 +224,6 @@ for run in range(args.n_runs):
                     generator.optimize(data_x, **kwargs)
 
                     if task > 0 and args.rehearsal:
-                        # potentially update the indices of `re_x`, or even it's compression level
                         generator.buffer_update_idx(re_x, re_y, re_t, re_idx)
 
                     if n_iter < args.cls_n_iters:
@@ -216,19 +231,20 @@ for run in range(args.n_runs):
                         logits = classifier(input_x)
 
                         if args.multiple_heads:
-                            logits = logits.masked_fill(tr_loader.dataset.mask == 0, -1e9)
+                            mask = tr_loader.dataset.mask
+                            logits = logits.masked_fill(mask == 0, -1e9)
 
                         opt_class.zero_grad()
                         loss_class = F.cross_entropy(logits, input_y)
                         loss_class.backward()
-                        #opt_class.step()
 
                         if task > 0 :
                             logits = classifier(re_x)
 
                             if args.multiple_heads:
                                 mask = torch.zeros_like(logits)
-                                mask.scatter_(1, tr_loader.dataset.task_ids[re_t], 1)
+                                task_ids = tr_loader.dataset.task_ids[re_t]
+                                mask.scatter_(1, task_ids, 1)
                                 logits  = logits.masked_fill(mask == 0, -1e9)
 
                             loss_class = F.cross_entropy(logits, re_y)
@@ -240,25 +256,27 @@ for run in range(args.n_runs):
 
                 # add compressed rep. to buffer (ONLY during last epoch)
                 if (i+1) % 20 == 0 or (i+1) == len(tr_loader):
-                    generator.log(task, writer=writer, mode='train', should_print='kitti' in args.dataset )#args.print_logs)
+                    generator.log(task, writer=writer, mode='train', \
+                            should_print='kitti' in args.dataset )
 
                 if args.rehearsal:
                     generator.add_reservoir(input_x, input_y, task, idx_)
 
 
             # Test the model
-            # -------------------------------------------------------------------------------
+            # ------------------------------------------------------------------
             generator.update_old_decoder()
             eval_drift(max_task=task)
             eval('valid', max_task=task)
             if task == (args.n_tasks - 1) or True: eval('test', max_task=task)
 
         buffer_sample, by, bt, _ = generator.sample_from_buffer(64)
-        save_image(rescale_inv(buffer_sample), 'samples/buf__%s_%d.png' % (args.model_name, task), nrow=8)
+        save_image(rescale_inv(buffer_sample), '../samples/buf__%s_%d.png' % \
+                (args.model_name, task), nrow=8)
 
     print(RESULTS[:, 0, -1].mean(), RESULTS[:, 1, -1].mean())
 
-np.save(join(log_dir, 'results'), RESULTS)
+np.save(join(args.log_dir, 'results'), RESULTS)
 
 # Save final results
 acc_avg = RESULTS.mean(axis=0)
@@ -275,8 +293,10 @@ for acc_, std_ in zip(acc_avg[0][-1], acc_std[0][-1]):
     out += '{:.2f} +- {:.2f}\t'.format(acc_, std_ * 2 / np.sqrt(args.n_runs))
 print(out)
 
-print('{:.2f} +- {:.2f}'.format(RESULTS[:, 0, -1, :].mean(), RESULTS[:, 0, -1, :].std() * 2 / np.sqrt(args.n_runs)))
-print('{:.2f} +- {:.2f}'.format(forget[:, 0, :].mean(), RESULTS[:, 0, :].std() * 2 / np.sqrt(args.n_runs)))
+print('{:.2f} +- {:.2f}'.format(RESULTS[:, 0, -1, :].mean(), \
+        RESULTS[:, 0, -1, :].std() * 2 / np.sqrt(args.n_runs)))
+print('{:.2f} +- {:.2f}'.format(forget[:, 0, :].mean(), \
+        RESULTS[:, 0, :].std() * 2 / np.sqrt(args.n_runs)))
 
 
 print('final test:')
@@ -285,5 +305,7 @@ for acc_, std_ in zip(acc_avg[0][-1], acc_std[0][-1]):
     out += '{:.2f} +- {:.2f}\t'.format(acc_, std_ * 2 / np.sqrt(args.n_runs))
 print(out)
 
-print('{:.2f} +- {:.2f}'.format(RESULTS[:, 1, -1, :].mean(), RESULTS[:, 1, -1, :].std() * 2 / np.sqrt(args.n_runs)))
-print('{:.2f} +- {:.2f}'.format(forget[:, 1, :].mean(), RESULTS[:, 1, :].std() * 2 / np.sqrt(args.n_runs)))
+print('{:.2f} +- {:.2f}'.format(RESULTS[:, 1, -1, :].mean(), \
+        RESULTS[:, 1, -1, :].std() * 2 / np.sqrt(args.n_runs)))
+print('{:.2f} +- {:.2f}'.format(forget[:, 1, :].mean(), \
+        RESULTS[:, 1, :].std() * 2 / np.sqrt(args.n_runs)))
