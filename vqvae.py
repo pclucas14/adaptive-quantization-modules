@@ -192,6 +192,7 @@ class SoftQuantize(nn.Module):
         self.register_parameter('embed', nn.Parameter(embed))
         self.register_buffer('count', torch.zeros(num_embeddings).long())
 
+
     def forward(self, x):
         x = x.permute(0, 2, 3, 1)
 
@@ -342,9 +343,12 @@ class GumbelQuantize(nn.Module):
 
         x   = x.permute(0, 2, 3, 1) # (bs, C, H, W) --> (bs, H, W, C)
         shp = x.shape
+
+        # import pdb; pdb.set_trace()
+        # broken down into bs, latent_dim, categorical dim
         x   = x.view(x.size(0), x.size(1) * x.size(2), x.size(3))
 
-        z_q = self.gumbel_softmax(x, temp, hard=True)
+        z_q = self.gumbel_softmax(x, temp) #, hard=True)
         z_q = z_q.view(shp)
         z_q = z_q.permute(0, 3, 1, 2)
 
@@ -469,12 +473,14 @@ class Encoder(nn.Module):
         blocks += [nn.ReLU(inplace=True)]
 
         # equivalent of `quantize_conv`
-        # blocks += [nn.Conv2d(channel, args.embed_dim, 1)]
+        if args.embed_dim != channel:
+            blocks += [nn.Conv2d(channel, args.embed_dim, 1)]
 
         self.blocks = nn.Sequential(*blocks)
 
     def forward(self, x):
         return self.blocks(x)
+
 
 
 class Decoder(nn.Module):
@@ -494,7 +500,11 @@ class Decoder(nn.Module):
         else:
             ks = 4
 
-        blocks = [] #nn.Conv2d(in_channel, channel, 3, padding=1)]
+        blocks = []
+
+        # equivalent of `quantize_conv`
+        if args.embed_dim != channel:
+            blocks += [nn.Conv2d(args.embed_dim, channel, 1)]
 
         for i in range(num_residual_layers):
             blocks += [ResBlock(channel, num_residual_hiddens)]
