@@ -50,6 +50,7 @@ def get_global_args(arglist):
     # Data and training settings
     add('--data_folder', type=str, default="../cl-pytorch/data",
             help='Location of data (will download data if does not exist)')
+    add('--run_dir', type=str, default='runs')
     add('--dataset', type=str, default='split_cifar10',
             help='Dataset name')
     add('--data_size', type=int, nargs='+', default=(3, 128, 128),
