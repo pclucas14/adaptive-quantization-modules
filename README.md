@@ -1,5 +1,5 @@
 # Online Continual Compression via Stacked Quantization Modules (SQM)
-Stacking Quantization blocks for efficient lifelong online compression
+Stacking Quantization blocks for efficient lifelong online compression </br>
 Code for reproducing all results in our paper, which can be found [here](https://openreview.net/pdf?id=S1xHfxHtPr) </br>
 
 ## (key) Requirements 
