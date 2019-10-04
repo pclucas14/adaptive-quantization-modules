@@ -8,7 +8,7 @@ import _pickle as pickle
 from PIL import Image
 from collections import OrderedDict
 
-from kitti_utils import *
+from utils.kitti_utils import *
 
 class Kitti(data.Dataset):
     def __init__(self, args, root='/mnt/data/lpagec/kitti_data/raw', n_points_pre=2048, n_points_post=1024, task_id=-1):
