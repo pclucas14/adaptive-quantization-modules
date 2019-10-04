@@ -112,7 +112,7 @@ def weights_init(m):
         m.bias.data.fill_(0)
 
 def remove_zeros(pc):
-    xx = torch.cuda.FloatTensor(pc)
+    xx = torch.FloatTensor(pc)
     if xx.dim() == 3:
         xx = xx.unsqueeze(0)
 
@@ -139,6 +139,10 @@ def remove_zeros(pc):
 
     return xx.cpu().data.numpy()
 
+def postprocess(point):
+    min_a, max_a = -41.1245002746582,   36.833248138427734
+    min_b, max_b = -25.833599090576172, 30.474000930786133
+    min_c, max_c = -2.3989999294281006, 0.7383332848548889
 
 def preprocess(dataset):
     # remove outliers
@@ -159,6 +163,7 @@ def preprocess(dataset):
     mask = np.maximum(mask, dist < 7)
 
     dataset = dataset * (1 - np.expand_dims(mask, -1))
+    #print(np.absolute(dataset).max())
     dataset /= np.absolute(dataset).max()
 
     dataset = to_polar_np(dataset).transpose(0, 3, 1, 2)
