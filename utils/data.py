@@ -76,7 +76,7 @@ def get_kitti(args):
 
     # get datasets
     args.input_size = (3, 40, 512)
-    from kitti_loader import Kitti
+    from utils.kitti_loader import Kitti
     max_task = 61 if args.max_task == -1 else args.max_task
     dss_train = [Kitti(args, task_id=i) for i in range(max_task) if i != 17]
     dss_valid = [Kitti(args, task_id=i) for i in range(max_task) if i != 17]
