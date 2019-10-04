@@ -8,7 +8,6 @@ import torch.distributions as D
 import torch.nn.utils.weight_norm as wn
 from collections import OrderedDict as OD
 from collections import defaultdict as DD
-from addict import Dict
 from copy import deepcopy
 from PIL import Image
 
@@ -130,6 +129,10 @@ def load_args(path):
 
     for layer_idx in range(n_layers):
         dot_args.layers[layer_idx] = dotdict(args_dict['layers'][str(layer_idx)])
+
+    # Maybe the arg file is missing some newer ones. In that case, give
+    # them the default value
+    # TODO
 
     return dot_args
 
