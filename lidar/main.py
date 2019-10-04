@@ -1,21 +1,23 @@
+import sys
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.distributions as dist
+import numpy as np
 from os.path import join
+from pydoc  import locate
+from copy   import deepcopy
+import torch.nn.functional as F
 from torchvision.utils import save_image
 from tensorboardX import SummaryWriter
 
-from copy   import deepcopy
-from pydoc  import locate
+sys.path.append('../')
+from utils.data   import *
+from utils.buffer import *
+from utils.utils  import *
+from utils.args   import get_args
 
-from buffer  import *
-from utils   import *
-from data    import *
-from args    import get_args
-from modular import QStack
+from common.modular import QStack
 
 args = get_args()
+print(args)
 
 # functions
 Mean = lambda x : sum(x) / len(x)
@@ -61,14 +63,14 @@ def eval(name, max_task=-1, break_after=-1):
 
             if 'kitti' in args.dataset:
                 # save lidar to samples
-                from kitti_utils import from_polar
+                from utils.kitti_utils import from_polar
                 all_samples = (all_samples if args.xyz else from_polar(all_samples))[:12]
-                np.save(open('lidars/{}_test{}_{}'.format(args.model_name, task_t, max_task), 'wb'),
+                np.save(open('../lidars/{}_test{}_{}'.format(args.model_name, task_t, max_task), 'wb'),
                         all_samples.cpu().data.numpy(), allow_pickle=False)
 
             else:
                 save_image(rescale_inv(all_samples).view(-1, *args.input_size), \
-                    'samples/{}_test_{}_{}.png'.format(args.model_name, task_t, max_task))
+                    '../samples/{}_test_{}_{}.png'.format(args.model_name, task_t, max_task))
 
 
 def eval_drift(max_task=-1):
@@ -138,7 +140,7 @@ for run in range(args.n_runs):
     set_seed(args.seed)
 
     # fetch data
-    data = locate('data.get_%s' % args.dataset)(args)
+    data = locate('utils.data.get_%s' % args.dataset)(args)
 
     # build buffers to store data & indices (for drift monitoring)
     drift_images, drift_indices = [], []
@@ -198,13 +200,13 @@ for run in range(args.n_runs):
 
             buffer_sample, by, bt, _ = generator.sample_from_buffer(64)
             if 'kitti' in args.dataset:
-                from kitti_utils import from_polar
+                from utils.kitti_utils import from_polar
                 buffer_sample = buffer_sample[torch.randperm(64)][:12]
                 buffer_sample = (buffer_sample if args.xyz else from_polar(buffer_sample))[:12]
-                np.save(open('lidars/{}_buf{}'.format(args.model_name, task), 'wb'),
+                np.save(open('../lidars/{}_buf{}'.format(args.model_name, task), 'wb'),
                         buffer_sample.cpu().data.numpy(), allow_pickle=False)
             else:
-                save_image(rescale_inv(buffer_sample), 'samples/buf_%s_%d.png' % (args.model_name, task), nrow=8)
+                save_image(rescale_inv(buffer_sample), '../samples/buf_%s_%d.png' % (args.model_name, task), nrow=8)
 
     # save model
     save_path = join(args.log_dir, 'gen.pth')
