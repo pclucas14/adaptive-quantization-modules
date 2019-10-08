@@ -191,7 +191,7 @@ for run in range(args.n_runs):
 
     for task, tr_loader in enumerate(train_loader):
 
-        for epoch in range(args.n_epochs):
+        for epoch in range(args.num_epochs):
             generator.train()
             classifier.train()
             sample_amt = 0
