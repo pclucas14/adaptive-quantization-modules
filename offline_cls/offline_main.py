@@ -121,7 +121,7 @@ def eval_cls(name, max_task=-1, break_after=-1):
             RESULTS[run][res_idx][max_task][task_t] = mean_acc
 
         print(RESULTS[-1, res_idx, -1].mean())
-        return RESULTS[-1, res_idx, -1].mean()
+        return RESULTS
 
         """ Logging """
         logs = average_log(logs)
@@ -189,9 +189,9 @@ def eval_gen(name, max_task=-1, break_after=-1):
 
 
 
-# -------------------------------------------------------------------------------
-# Train the model
-# -------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Train generator
+# ------------------------------------------------------------------------------
 
 for run in range(args.n_runs):
 
@@ -287,6 +287,10 @@ generator.eval()
 
 RESULTS = np.zeros((args.n_runs, 2, args.n_tasks, args.n_tasks))
 
+# ------------------------------------------------------------------------------
+# Train classifier
+# ------------------------------------------------------------------------------
+
 # optimizers
 classifier = ResNet18(args.n_classes, 20, input_size=args.input_size).to(args.device)
 print("number of classifier parameters:", sum([np.prod(p.size()) for p in classifier.parameters()]))
@@ -319,6 +323,8 @@ while True:
     tr_acc = tr_num / tr_den
     print('training acc : {:.4f}'.format(tr_acc))
     valid_acc = eval_cls('valid')
+    valid_acc = valid_acc[-1, 0, -1].mean()
+
 
     if valid_acc > last_valid_acc:
         save_path = join(args.log_dir, 'cls.pth')
@@ -334,6 +340,13 @@ writer.add_scalar('valid_classifier_acc', last_valid_acc, 0)
 # make histogram with all the values
 hist = make_histogram(RESULTS[-1, 0, -1], 'Valid Accuracy')
 writer.add_image('Valid. Set Acc', hist, 0)
+
+# test set eval
+classifier.load_state_dict(torch.load(os.path.join(args.log_dir, 'cls.pth')))
+
+logs = eval_cls('test')
+np.savetxt(os.path.join(args.log_dir, 'test_acc.txt'), logs[-1, -1, -1])
+writer.add_scalar('test_classifier_acc', logs[-1, -1, -1].mean(), 0)
 
 import time
 time.sleep(10)
