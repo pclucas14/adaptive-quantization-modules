@@ -106,7 +106,7 @@ def get_split_cifar10(args):
     if args.override_cl_defaults:
         raise NotImplementedError
 
-    # fetch MNIST
+    # fetch data
     train = datasets.CIFAR10('../../cl-pytorch/data/', train=True,  download=True)
     test  = datasets.CIFAR10('../../cl-pytorch/data/', train=False, download=True)
 
@@ -145,12 +145,10 @@ def get_split_cifar10(args):
         tr_s, tr_e = train_idx[i], train_idx[i + skip]
         te_s, te_e = test_idx[i],  test_idx[i + skip]
 
-        train_size = tr_e - tr_s
-        split = tr_s + int(0.9 * train_size.item())
-
-        train_ds += [(train_x[tr_s:split], train_y[tr_s:split])]
-        valid_ds += [(train_x[split:tr_e], train_y[split:tr_e])]
+        train_ds += [(train_x[tr_s:tr_e], train_y[tr_s:tr_e])]
         test_ds  += [(test_x[te_s:te_e],  test_y[te_s:te_e])]
+
+    train_ds, valid_ds = make_valid_from_train(train_ds)
 
     train_ds  = map(lambda x : XYDataset(x[0], x[1], **{'source':'cifar10'}), train_ds)
     valid_ds  = map(lambda x : XYDataset(x[0], x[1], **{'source':'cifar10'}), valid_ds)
@@ -223,6 +221,9 @@ def get_split_cifar100(args):
 
     # next we randomly partition the dataset
     indices = [x for x in range(100)]
+
+    # note: previously we shuffled the indices to make the split
+    # random. However we left it out to be consistent with A-GEM
 
     train_classes = [train_ds[indices[i]] for i in range(100)]
     valid_classes = [valid_ds[indices[i]] for i in range(100)]
@@ -387,3 +388,22 @@ def get_miniimagenet(args):
     test_ds   = map(lambda x, y : XYDataset(x[0], x[1], **{'source':'cifar100', 'mask':y, 'task_ids':task_ids, 'transform':transform}), test_ds, masks)
 
     return train_ds, valid_ds, test_ds
+
+
+def make_valid_from_train(dataset, cut=0.9):
+    tr_ds, val_ds = [], []
+    for task_ds in dataset:
+        x_t, y_t = task_ds
+
+        # first we shuffle
+        perm = torch.randperm(x_t.size(0))
+        x_t, y_t = x_t[perm], y_t[perm]
+
+        split = int(x_t.size(0) * cut)
+        x_tr, y_tr   = x_t[:split], y_t[:split]
+        x_val, y_val = x_t[split:], y_t[split:]
+
+        tr_ds  += [(x_tr, y_tr)]
+        val_ds += [(x_val, y_val)]
+
+    return tr_ds, val_ds

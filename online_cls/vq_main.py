@@ -86,6 +86,7 @@ def eval_drift(max_task=-1):
 
 def eval(name, max_task=-1):
     """ evaluate performance on held-out data """
+    print(name)
     with torch.no_grad():
         generator.eval(); classifier.eval()
 
@@ -251,8 +252,8 @@ for run in range(args.n_runs):
                             loss_class.backward()
                         opt_class.step()
 
-                if args.n_iters > 0: generator.update_old_decoder()
-
+                # set the gen. weights used for sampling == current generator weights
+                generator.update_old_decoder()
 
                 # add compressed rep. to buffer (ONLY during last epoch)
                 if (i+1) % 20 == 0 or (i+1) == len(tr_loader):
@@ -268,7 +269,7 @@ for run in range(args.n_runs):
             generator.update_old_decoder()
             eval_drift(max_task=task)
             eval('valid', max_task=task)
-            if task == (args.n_tasks - 1) or True: eval('test', max_task=task)
+            eval('test',  max_task=task)
 
         buffer_sample, by, bt, _ = generator.sample_from_buffer(64)
         save_image(rescale_inv(buffer_sample), '../samples/buf__%s_%d.png' % \

@@ -145,7 +145,7 @@ def print_and_save_args(args, path):
 def load_model_from_file(path):
     old_args = load_args(path)
 
-    from modular import QStack
+    from common.modular import QStack
 
     # create model
     model = QStack(old_args)

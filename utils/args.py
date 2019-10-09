@@ -127,6 +127,9 @@ def get_global_args(arglist):
     add('--debug', action='store_true')
     add('--recon_th', type=float, nargs='+', default=[1e-3],
             help='satisfying reconstruction threshold')
+    add('--eps_th', type=float, default=0.005,
+            help='distortion allowed between old reconstruction and newer one '+
+            'when (re) encoding an image')
 
     add('--gen_weights', type=str, default=None)
 

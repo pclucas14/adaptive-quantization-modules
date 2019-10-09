@@ -408,10 +408,19 @@ class QStack(nn.Module):
         per_block_l2 = per_block_l2.mean(dim=(2,3,4))
 
         recon_th = self.recon_th.unsqueeze(1).expand_as(per_block_l2)
-        block_id = (per_block_l2 < recon_th).sum(dim=0)
 
         # TODO: build block id when sampling
-        pre_block_id = self.last_block_id.to(block_id.device)
+        pre_block_id = self.last_block_id.to(per_block_l2.device)
+
+        ''' '''
+        # we want the reconstruction id to be `eps` if the image
+        # has already been compressed
+        already_compressed = ac = (pre_block_id > 0)
+        ac = ac.view(1, -1).expand_as(recon_th).float()
+
+        recon_th = self.args.eps_th * ac + (1 - ac) * recon_th
+        block_id = (per_block_l2 < recon_th).sum(dim=0)
+        ''' '''
 
         # take the most compressed rep (biggest block id)
         new_block_id = torch.stack((block_id, pre_block_id)).max(dim=0)[0]
@@ -458,9 +467,17 @@ class QStack(nn.Module):
 
         # sample proportional to the amounts of points per resolution
         probs = torch.Tensor([self.reg_stored] + [x.n_samples for x in self.blocks])
+
+        if self.training:
+            # sample proportional to the memory usage. Used in training to maximize space
+            probs = torch.Tensor([self.reg_buffer.n_memory] + [b.n_memory for b in self.blocks])
+
         probs = probs / probs.sum()
         samples_per_block = (probs * n_samples).floor()
 
+        # make sure we don't sample more than available
+        avail = torch.Tensor([self.reg_buffer.n_samples] + [x.n_samples for x in self.blocks])
+        samples_per_block = torch.stack([avail, samples_per_block]).min(dim=0)[0]
 
         #TODO: this will throw an error if no samples are stored in full resolution
         missing = n_samples - samples_per_block.sum()
@@ -571,6 +588,19 @@ class QStack(nn.Module):
         """ Reservoir Sampling Buffer Addition """
 
         mem_free = self.mem_size - self.mem_used
+        '''
+        can_store_uncompressed = csu = int(min((mem_free) // x[0].numel(), x.size(0)))
+
+        if can_store_uncompressed > 0:
+            self.reg_buffer.add(x[:csu], y[:csu], t, ds_idx[:csu], swap_idx=None)
+            x, y, ds_idx = x[csu:], y[csu:], ds_idx[csu:]
+
+            # update statistic
+            self.n_seen_so_far += csu
+
+            # mark the buffer stats as needing update
+            self.up_to_date(False)
+        '''
 
         if x.size(0) > 0:
             # in reservoir sampling, samples should be added with
@@ -606,10 +636,19 @@ class QStack(nn.Module):
             recon_th = self.recon_th.unsqueeze(1).expand_as(per_block_l2)
             block_id = (per_block_l2 < recon_th).sum(dim=0)
 
-            # we calculate the amount of space that needs to be freed
-            space_needed = F.one_hot(block_id[idx_new_data], len(self.blocks) + 1).float()
+            # on the off chance that all samples fit in memory, add them add
+            space_needed = F.one_hot(block_id, len(self.blocks) + 1).float()
             space_needed = (space_needed * self.mem_per_block).sum()
             space_needed = (space_needed - mem_free).clamp_(min=0.)
+
+            if space_needed == 0:
+                # add all the points
+                idx_new_data = torch.arange(x.size(0))
+            else:
+                # we calculate the amount of space that needs to be freed
+                space_needed = F.one_hot(block_id[idx_new_data], len(self.blocks) + 1).float()
+                space_needed = (space_needed * self.mem_per_block).sum()
+                space_needed = (space_needed - mem_free).clamp_(min=0.)
 
             # for samples that will not be added, mark their block id as -1
             if idx_new_data.size(0) < x.size(0):

@@ -259,7 +259,8 @@ for run in range(args.n_runs):
                             # potentially update the indices of `re_x`, or even it's compression level
                             generator.buffer_update_idx(re_x, re_y, re_t, re_idx)
 
-                    if args.n_iters > 0: generator.update_old_decoder()
+                    # set the gen. weights used for sampling == current generator weights
+                    generator.update_old_decoder()
 
                     if (i+1) % 200 == 0 or (i+1) == len(tr_loader):
                         generator.log(task, writer=writer, mode='train', should_print=args.print_logs)
