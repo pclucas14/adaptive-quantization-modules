@@ -30,4 +30,15 @@ python kitti_utils.py 'DSkitti_NB3_RTH[7e-05, 7e-05, 7e-05]_Comp8.00^16.00^32.00
 
 will display the test set recontructions we get after the 3rd epoch
 
+| |
+|:-------------------------:|
+|32x compression |
+|<img width="1604" src="https://github.com/pclucas14/modular-vqvae/blob/master/lidar/imgs/1.png"> |
+|16x compression |
+|<img width="1604" src="https://github.com/pclucas14/modular-vqvae/blob/master/lidar/imgs/2.png"> |
+|8x compression |
+|<img width="1604" src="https://github.com/pclucas14/modular-vqvae/blob/master/lidar/imgs/3.png"> |
+|original LiDAR |
+|<img width="1604" src="https://github.com/pclucas14/modular-vqvae/blob/master/lidar/imgs/4.png"> |
+
 
