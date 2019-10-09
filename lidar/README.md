@@ -25,8 +25,9 @@ sshfs johndoe@beluga.computecanada.ca:/home/johndoe/modular-vqvae/lidars /home/D
 The actual code to display the point clouds in in `utils/kitti_utils.py` (note that you can simply copy this file inside the directory where the point clouds are located when doing sshfs, and run it on your local machine). By default, if you pass a filepath as 1st argument to `kitti_utils.py` it will display the first 4 point clouds. For example, 
 
 ```
-python kitti_utils.py 'DSkitti_NB3_RTH[7e-05, 7e-05, 7e-05]_Comp8.00^16.00^32.00^_Coef1.10_3453_test4_3'
+python kitti_utils.py 'DSkitti_NB3_RTH[7e-05, 7e-05, 7e-05]_Comp8.00^16.00^32.00^_Coef1.10_3453_test12_11'
 ```
 
 will display the test set recontructions we get after the 3rd epoch
+
 
