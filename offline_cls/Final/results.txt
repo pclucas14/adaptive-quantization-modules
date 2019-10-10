@@ -1,4 +1,2 @@
-# this file was created by running `python parse.py > results.txt`
-
 1 15.6245 += 0.5007
-2 19.5839 += 0.5090
+2 19.2300 += 0.5679
