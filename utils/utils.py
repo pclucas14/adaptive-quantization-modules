@@ -11,6 +11,8 @@ from collections import defaultdict as DD
 from copy import deepcopy
 from PIL import Image
 
+import matplotlib
+matplotlib.use('pdf')
 import matplotlib.mlab as mlab
 import matplotlib.pyplot as plt
 
