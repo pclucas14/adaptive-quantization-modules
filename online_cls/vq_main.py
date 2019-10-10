@@ -26,7 +26,7 @@ Mean = lambda x : sum(x) / len(x)
 rescale_inv = (lambda x : x * 0.5 + 0.5)
 
 # spawn writer
-args.log_dir = join('runs', args.model_name)
+args.log_dir = join(args.run_dir, args.model_name)
 sample_dir   = join(args.log_dir, 'samples')
 writer       = SummaryWriter(log_dir=join(args.log_dir, 'tf'))
 
