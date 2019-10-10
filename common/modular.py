@@ -641,7 +641,7 @@ class QStack(nn.Module):
             space_needed = (space_needed * self.mem_per_block).sum()
             space_needed = (space_needed - mem_free).clamp_(min=0.)
 
-            if space_needed == 0:
+            if space_needed == 0 and False:
                 # add all the points
                 idx_new_data = torch.arange(x.size(0))
             else:
