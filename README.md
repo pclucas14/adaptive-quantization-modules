@@ -1,6 +1,6 @@
 # Online Continual Compression via Stacked Quantization Modules (SQM)
 Stacking Quantization blocks for efficient lifelong online compression </br>
-Code for reproducing all results in our paper, which can be found [here](https://openreview.net/pdf?id=S1xHfxHtPr) </br>
+Code for reproducing all results in our paper, which can be found [here](paper.pdf) </br>
 
 ## (key) Requirements 
 - Python 3.7
