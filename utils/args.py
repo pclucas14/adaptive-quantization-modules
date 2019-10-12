@@ -206,12 +206,18 @@ def get_args():
         assert layer_no not in global_args.layers.keys()
         global_args.layers[layer_no] = layer_args
 
+        if layer_args.model in ['gumbel', 'argmax']:
+            print('overwriting the embedding dimension to == the number' +
+                  'of embeddings')
+            layer_args.embed_dim = layer_args.num_embeddings
+
     # for now let's specify every layer via the command line
     assert n_layers == global_args.num_blocks    or global_args.gen_weights
     assert n_layers == len(global_args.recon_th) or global_args.gen_weights
 
     assert global_args.cls_n_iters <= global_args.n_iters, \
             'might as well train gen. model more?'
+
 
     # we want to know what the compression factor is at every level
     current_shape = global_args.data_size[1:] # e.g. (128, 128)
