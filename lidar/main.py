@@ -14,6 +14,8 @@ from utils.buffer import *
 from utils.utils  import *
 from utils.args   import get_args
 
+from utils.kitti_utils import show_pc, from_polar
+
 from common.modular import QStack
 
 args = get_args()
@@ -24,13 +26,14 @@ Mean = lambda x : sum(x) / len(x)
 rescale_inv = (lambda x : x * 0.5 + 0.5)
 
 # spawn writer
-args.log_dir = join('runs_kitti_l1', args.model_name)
+args.log_dir = join('rebuttal_quant_3', args.model_name)
 sample_dir   = join(args.log_dir, 'samples')
 writer       = SummaryWriter(log_dir=args.log_dir)
 
 print(args)
 best_test = float('inf')
 maybe_create_dir(sample_dir)
+print_and_save_args(args, args.log_dir)
 print('logging into %s' % args.log_dir)
 writer.add_text('hyperparameters', str(args), 0)
 
@@ -63,7 +66,6 @@ def eval(name, max_task=-1, break_after=-1):
 
             if 'kitti' in args.dataset:
                 # save lidar to samples
-                from utils.kitti_utils import from_polar
                 all_samples = (all_samples if args.xyz else from_polar(all_samples))[:12]
                 np.save(open('../lidars/{}_test{}_{}'.format(args.model_name, task_t, max_task), 'wb'),
                         all_samples.cpu().data.numpy(), allow_pickle=False)
@@ -75,29 +77,35 @@ def eval(name, max_task=-1, break_after=-1):
 
 def eval_drift(max_task=-1):
     with torch.no_grad():
+        '''
+        TODO:
+            1) iterate over all the data in the buffer. Proceed level by level (no need for task by task for now)
+            2) keep a drift measure for every level.
+        '''
 
-        mses = []
-        n_eval = min(1024, generator.all_stored - 10)
+        generator.eval()
+        gen_iter = generator.sample_EVERYTHING()
 
-        if 'imagenet' in args.dataset or 'kitti' in args.dataset:
-            n_eval = min(n_eval, 64)
+        for batch in gen_iter:
+            print(batch[0].shape, batch[-1])
 
-        x, y, t, idx = generator.sample_from_buffer(n_eval)
+            x_t, y_t, task_t, idx_t, block_id = batch
 
-        for task, loader in enumerate(train_loader):
-            if task > max_task:
-                break
-
-            x_t   = x[t == task]
-            y_t   = y[t == task]
-            idx_t = idx[t == task]
-
-            if idx_t.size(0) == 0:
-                mses += [-1.]
-                continue
+            if block_id == -1: continue
 
             if 'imagenet' in args.dataset or 'kitti' in args.dataset:
-                target = [loader.dataset.__getitem__(x.item())[0] for x in idx_t]
+                target = []
+                for _idx, _task in zip(idx_t, task_t):
+                    loader = None
+                    for task__, loader_ in enumerate(train_loader):
+                        loader = loader_
+                        if task__ == _task: break
+                    try:
+                        target += [loader.dataset.__getitem__(_idx.item())[0]]
+                    except:
+                        import pdb; pdb.set_trace()
+                        xx = 1
+
                 if 'kitti' in args.dataset:
                     target = torch.from_numpy(np.stack(target))
                 else:
@@ -112,11 +120,11 @@ def eval_drift(max_task=-1):
             # remove nan
             if diff != diff: diff = torch.Tensor([0.])
 
-            mses += [diff.item()]
-            generator.blocks[0].log.log('drift_mse', F.mse_loss(x_t, target))
-            generator.log(task, writer=writer, mode='buffer', should_print=False)
+            #mses += [diff.item()]
+            generator.blocks[0].log.log('drift_mse_%d' % block_id, F.mse_loss(x_t, target), per_task=False)
+            generator.blocks[0].log.log('drift_mse_total', F.mse_loss(x_t, target), per_task=False)
 
-        print('DRIFT : ', mses, '\n\n')
+        generator.log(task, writer=writer, mode='buffer', should_print=True)
 
 
 # -------------------------------------------------------------------------------
@@ -140,7 +148,10 @@ for run in range(args.n_runs):
     set_seed(args.seed)
 
     # fetch data
+    import time
+    ss = time.time()
     data = locate('utils.data.get_%s' % args.dataset)(args)
+    print('data prepro took {:.4f} seconds'.format(time.time() - ss))
 
     # build buffers to store data & indices (for drift monitoring)
     drift_images, drift_indices = [], []
@@ -174,7 +185,7 @@ for run in range(args.n_runs):
                 for n_iter in range(args.n_iters):
 
                     if task > 0 and args.rehearsal:
-                        re_x, re_y, re_t, re_idx = generator.sample_from_buffer(input_x.size(0))
+                        re_x, re_y, re_t, re_idx = generator.sample_from_buffer(args.buffer_batch_size)
                         data_x, data_y = torch.cat((input_x, re_x)), torch.cat((input_y, re_y))
                     else:
                         data_x, data_y = input_x, input_y
@@ -198,17 +209,18 @@ for run in range(args.n_runs):
             eval_drift(max_task=task)
             eval('valid', max_task=task)
 
-            buffer_sample, by, bt, _ = generator.sample_from_buffer(64)
+            buffer_sample, by, bt, _ = generator.sample_from_buffer(min(64, generator.all_stored - 5))
             if 'kitti' in args.dataset:
                 from utils.kitti_utils import from_polar
-                buffer_sample = buffer_sample[torch.randperm(64)][:12]
+                buffer_sample = buffer_sample[torch.randperm(buffer_sample.size(0))][:12]
                 buffer_sample = (buffer_sample if args.xyz else from_polar(buffer_sample))[:12]
                 np.save(open('../lidars/{}_buf{}'.format(args.model_name, task), 'wb'),
                         buffer_sample.cpu().data.numpy(), allow_pickle=False)
             else:
                 save_image(rescale_inv(buffer_sample), '../samples/buf_%s_%d.png' % (args.model_name, task), nrow=8)
 
-    # save model
-    save_path = join(args.log_dir, 'gen.pth')
-    print('saving model to %s' % save_path)
-    torch.save(generator.state_dict(), save_path)
+        # save model
+        if not args.debug:
+            save_path = join(args.log_dir, 'gen.pth')
+            print('saving model to %s' % save_path)
+            torch.save(generator.state_dict(), save_path)
