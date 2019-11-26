@@ -6,7 +6,7 @@ from torch.nn import functional as F
 
 from utils.utils     import RALog, make_histogram
 from utils.buffer    import *
-from common.quantize import Quantize, GumbelQuantize, AQuantize
+from common.quantize import Quantize, GumbelQuantize, AQuantize, CQuantize
 from common.model    import Encoder, Decoder
 
 from torchvision.utils import save_image
@@ -35,7 +35,9 @@ class QLayer(nn.Module):
                 'amt of codebooks must match with codebook stride'
 
         # build quantization blocks
-        qt  = []
+        qt    = []
+        dtype = torch.LongTensor
+
         for i, size in zip(range(args.num_codebooks), args.quant_size):
             if args.model == 'vqvae':
                 qt += [Quantize(args.embed_dim // args.num_codebooks,
@@ -46,6 +48,10 @@ class QLayer(nn.Module):
                 qt += [GumbelQuantize(args.embed_dim // args.num_codebooks)]
             elif args.model == 'argmax':
                 qt += [AQuantize(args.embed_dim // args.num_codebooks)]
+            elif args.model == 'continuous':
+                qt += [CQuantize()]
+                dtype = torch.FloatTensor
+
 
         self.quantize = nn.ModuleList(qt)
 
@@ -63,7 +69,7 @@ class QLayer(nn.Module):
 
             buffers = []
             for shp in self.args.argmin_shapes:
-                buffers += [Buffer(shp, args.n_classes, dtype=torch.LongTensor, max_idx=args.num_embeddings)]
+                buffers += [Buffer(shp, args.n_classes, dtype=dtype, max_idx=args.num_embeddings)]
                 self.mem_per_sample += buffers[-1].mem_per_sample
 
             self.buffer = nn.ModuleList(buffers)
@@ -203,21 +209,28 @@ class QLayer(nn.Module):
 
         with torch.no_grad():
 
-            idx = torch.randperm(self.n_samples)
+            n_batches = self.n_samples // 128
+            if self.n_samples != n_batches * 128 : n_batches += 1
 
-            for i, (qt, buffer) in enumerate(zip(self.old_quantize, self.buffer)):
-                if i == 0:
-                    out_x = [qt.idx_2_hid(buffer.bx[idx])]
-                    out_y = buffer.by[idx]
-                    out_t = buffer.bt[idx]
-                    out_idx = buffer.bidx[idx]
-                else:
-                    out_x += [qt.idx_2_hid(buffer.bx[idx])]
-                    assert (out_y - buffer.by[idx]).abs().sum() == 0
-                    assert (out_t - buffer.bt[idx]).abs().sum() == 0
-                    assert (out_idx - buffer.bidx[idx]).abs().sum() == 0
+            for batch in range(n_batches):
+                # idx = torch.randperm(self.n_samples)
+                idx = range(batch * 128, min(self.n_samples, (batch+1) * 128))
 
-            return torch.cat(out_x, 1), out_y, out_t, out_idx
+                for i, (qt, buffer) in enumerate(zip(self.old_quantize, self.buffer)):
+                    if i == 0:
+                        out_x = qt.idx_2_hid(buffer.bx[idx])
+                        out_y = buffer.by[idx]
+                        out_t = buffer.bt[idx]
+                        out_idx = buffer.bidx[idx]
+                    else:
+                        out_x += [qt.idx_2_hid(buffer.bx[idx])]
+                        assert (out_y - buffer.by[idx]).abs().sum() == 0
+                        assert (out_t - buffer.bt[idx]).abs().sum() == 0
+                        assert (out_idx - buffer.bidx[idx]).abs().sum() == 0
+
+                yield out_x, out_y, out_t, out_idx
+                #return torch.cat(out_x, 1), out_y, out_t, out_idx
+
 
 
     def idx_2_hid(self, indices):
@@ -343,7 +356,7 @@ class QStack(nn.Module):
             self.can_store_reg = mem_size // (self.data_size)
 
             # whether we need to recompute the buffer statistics
-            self.up_to_date_mu = self.up_to_date_as  = True
+            self.up_to_date_mu = self.up_to_date_as  = False
 
             self.reg_buffer = Buffer(args.data_size, \
                     args.n_classes, dtype=torch.FloatTensor)
@@ -547,7 +560,16 @@ class QStack(nn.Module):
     def sample_EVERYTHING(self):
         """ something something something """
 
-        reg_x, reg_y, reg_t = self.reg_buffer.bx, self.reg_buffer.by, self.reg_buffer.bt
+        reg_x, reg_y, reg_t, reg_idx = self.reg_buffer.bx, self.reg_buffer.by, \
+                                       self.reg_buffer.bt, self.reg_buffer.bidx
+
+        n_batches = reg_x.size(0) // 128
+        if n_batches != reg_x.size(0) * 128: n_batches += 1
+
+        for i in range(n_batches):
+            idx = range(i * 128, min(reg_x.size(0), (i+1) * 128))
+            yield reg_x[idx], reg_y[idx], reg_t[idx], reg_idx[idx], -1
+
 
         # we reverse the blocks, so that all the decoding can be done in one pass
         r_blocks = self.blocks[::-1]
@@ -555,7 +577,21 @@ class QStack(nn.Module):
         i = 0
         for block in r_blocks:
 
-            xx, yy, tt, ds_idx  = block.sample_EVERYTHING()
+            try:
+                gen_iter = block.sample_EVERYTHING()
+                while True:
+                    xx, yy, tt, ds_idx  = next(gen_iter)
+
+                    xx = block.decoder(xx)
+                    for j, block_ in enumerate(self.blocks[::-1][i+1:]):
+                        xx = block_.decoder(xx)
+
+                    yield xx, yy, tt, ds_idx, block.id
+
+            except StopIteration:
+                i += 1
+
+            '''
             if i == 0 and xx.size(0) == 0:
                 continue
 
@@ -581,7 +617,7 @@ class QStack(nn.Module):
             i += 1
 
         return torch.cat((reg_x, out_x)).detach(), torch.cat((reg_y, out_y)).detach(), torch.cat((reg_t, out_t)).detach()
-
+            '''
 
 
     def add_reservoir(self, x, y, t, ds_idx, **kwargs):
