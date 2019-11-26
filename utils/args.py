@@ -32,7 +32,7 @@ def get_default_layer_args(arglist):
             'one with regular vector quantization, and one with 2 x 4 tensor ' +
             'quantization, use `1 204`, or `101 204`. N.B: results reported '  +
             'in the paper do not use matrix of tensor quantization')
-    add('--model', type=str, choices=['vqvae', 'gumbel', 'argmax'],
+    add('--model', type=str, choices=['vqvae', 'gumbel', 'argmax', 'continuous'],
             default='vqvae',
             help='type of discretization to use')
     add('--embed_grad_update', type=int, default=1,
@@ -119,6 +119,9 @@ def get_global_args(arglist):
     add('--xyz', action='store_true',
             help='if True, xyz coordinates are used instead of polar. '        +
             'only used fir LiDAR')
+    add('--scale', type=int, default=1,
+            help='if True, point cloud is normalized. Should never be set to ' +
+            'false when training')
     add('--from_compressed', type=int, default=1,
             help='deprecated')
 
@@ -218,7 +221,6 @@ def get_args():
     assert global_args.cls_n_iters <= global_args.n_iters, \
             'might as well train gen. model more?'
 
-
     # we want to know what the compression factor is at every level
     current_shape = global_args.data_size[1:] # e.g. (128, 128)
 
@@ -271,11 +273,22 @@ def get_args():
             # count the amount of indices for a specific block
             total_idx += np.prod(current_shape) / np.prod(qs)
 
-            argmin_shapes += [
-                    (current_shape[0] // qs[0], current_shape[1] // qs[1])]
+            argmin_shape = (current_shape[0] // qs[0], current_shape[1] // qs[1])
+
+            if global_args.layers[i].model == 'continuous':
+                argmin_shape = (global_args.layers[i].embed_dim,) + argmin_shape
+            argmin_shapes += [argmin_shape]
 
         comp_rate  = np.prod(global_args.data_size) / float(total_idx)
-        comp_rate *= np.log2(256)/np.log2(global_args.layers[i].num_embeddings)
+
+        if global_args.layers[i].model == 'continuous':
+            # for the contiuous model the number of embeddings is useless
+            # actually we have to set it to 256 so that compression calcul.
+            # done in buffer.py works
+            global_args.layers[i].num_embeddings = 256
+            comp_rate /= global_args.layers[i].embed_dim
+        else:
+            comp_rate *= np.log2(256)/np.log2(global_args.layers[i].num_embeddings)
 
         global_args.layers[i].comp_rate     = comp_rate
         global_args.layers[i].argmin_shapes = argmin_shapes
