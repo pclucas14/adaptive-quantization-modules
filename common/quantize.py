@@ -292,3 +292,14 @@ class AQuantize(nn.Module):
         out = F.one_hot(indices, self.dim) # bs, H, W, C
         return out.permute(0, 3, 1, 2).float()
 
+
+class CQuantize(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        #x = x.permute(0, 2, 3, 1)
+        return x, 0, x, 0.
+
+    def idx_2_hid(self, indices):
+        return indices
