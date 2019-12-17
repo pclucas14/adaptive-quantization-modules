@@ -27,9 +27,12 @@ class QLayer(nn.Module):
         self.args    = args
         self.log     = RALog()
 
-        # build networks
-        self.encoder = Encoder(args)
-        self.decoder = Decoder(args)
+        if args.downsample > 1:
+            # build networks
+            self.encoder = Encoder(args)
+            self.decoder = Decoder(args)
+        else:
+            self.encoder = self.decoder = lambda x : x
 
         assert args.num_codebooks == len(args.quant_size), \
                 'amt of codebooks must match with codebook stride'
@@ -38,9 +41,12 @@ class QLayer(nn.Module):
         qt    = []
         dtype = torch.LongTensor
 
+        embed_sizes = [x.size(0) for x in \
+                torch.zeros(args.embed_dim).chunk(args.num_codebooks)]
+
         for i, size in zip(range(args.num_codebooks), args.quant_size):
             if args.model == 'vqvae':
-                qt += [Quantize(args.embed_dim // args.num_codebooks,
+                qt += [Quantize(embed_sizes[i], #args.embed_dim // args.num_codebooks,
                             args.num_embeddings, # // size ** 2,
                             decay=args.decay, size=size,
                             embed_grad_update=args.embed_grad_update)]
@@ -52,16 +58,15 @@ class QLayer(nn.Module):
                 qt += [CQuantize()]
                 dtype = torch.FloatTensor
 
-
         self.quantize = nn.ModuleList(qt)
 
         if args.optimization == 'blockwise':
-            # build layer opt
-            self.opt = torch.optim.Adam(self.parameters(), lr=args.learning_rate)
-
-        # TODO: check if Discretized Mixture of Logistic would do better
-        self.register_parameter('dec_log_stdv', \
-                torch.nn.Parameter(torch.Tensor([0.])))
+            try:
+                # build layer opt
+                self.opt = torch.optim.Adam(self.parameters(),
+                        lr=args.learning_rate)
+            except:
+                self.opt = None
 
         if args.rehearsal:
             self.mem_per_sample = 0
@@ -76,7 +81,7 @@ class QLayer(nn.Module):
 
             # same for now
             self.old_quantize = self.quantize
-            self.old_decoder  = self.decoder
+            self.old_decoder  = deepcopy(self.decoder)
 
             assert -.01 < (self.mem_per_sample - np.prod(args.data_size) / self.comp_rate) < .01
 
@@ -99,11 +104,19 @@ class QLayer(nn.Module):
     def update_old_decoder(self):
         """ updates the stale decoder weights with the new ones """
 
-        self.old_decoder   = deepcopy(self.decoder)
-        self.old_quantize  = deepcopy(self.quantize)
+        #self.old_decoder   = deepcopy(self.decoder)
+        #return
+        # self.old_quantize  = deepcopy(self.quantize)
+        if 'function' in str(type(self.decoder)): return
 
-        for qt in self.old_quantize:
-            qt.no_update = True
+        tau = self.args.tau
+
+        # `tau` of 1. will be equivalent to copying the new model
+        # for qt in self.old_quantize:
+        #     qt.no_update = True
+        # Update the frozen target models
+        for param, target_param in zip(self.decoder.parameters(), self.old_decoder.parameters()):
+            target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
 
     def add_to_buffer(self, argmins, y, t, ds_idx, idx=None):
@@ -218,7 +231,7 @@ class QLayer(nn.Module):
 
                 for i, (qt, buffer) in enumerate(zip(self.old_quantize, self.buffer)):
                     if i == 0:
-                        out_x = qt.idx_2_hid(buffer.bx[idx])
+                        out_x = [qt.idx_2_hid(buffer.bx[idx])]
                         out_y = buffer.by[idx]
                         out_t = buffer.bt[idx]
                         out_idx = buffer.bidx[idx]
@@ -228,7 +241,7 @@ class QLayer(nn.Module):
                         assert (out_t - buffer.bt[idx]).abs().sum() == 0
                         assert (out_idx - buffer.bidx[idx]).abs().sum() == 0
 
-                yield out_x, out_y, out_t, out_idx
+                yield torch.cat(out_x, 1), out_y, out_t, out_idx
                 #return torch.cat(out_x, 1), out_y, out_t, out_idx
 
 
@@ -255,8 +268,8 @@ class QLayer(nn.Module):
         # 2) quantize
         z_q_s, argmins, ppls, diffs = [], [], [], []
 
-        for z_e, quantize in zip(z_e_s, self.quantize):
-            z_q, diff, argmin, ppl = quantize(z_e)
+        for z_e_, quantize in zip(z_e_s, self.quantize):
+            z_q, diff, argmin, ppl = quantize(z_e_)
 
             z_q_s   += [z_q]
             diffs   += [diff]
@@ -301,11 +314,6 @@ class QLayer(nn.Module):
         diffs = sum(self.diffs) / len(self.diffs)
         recon = F.mse_loss(self.output, target)
 
-        # TODO: change that
-        # recon = F.l1_loss(self.output, target)
-        # recon = (self.output - target).abs().sum(dim=(1,2,3)).mean(dim=0)
-        # import pdb; pdb.set_trace()
-
         self.recon = recon.item()
         if not kwargs.get('no_log', False):
             # during eval we actually perform a complete log, so no need for per-task here
@@ -345,6 +353,7 @@ class QStack(nn.Module):
 
             if not args.sunk_cost:
                 mem_size -= sum(p.numel() for p in self.parameters())
+                assert mem_size > 0, 'model is too big to store any samples'
 
             self.mem_size = mem_size    # total floats that can be stored across all blocks
             self.n_seen_so_far = 0      # number of samples seen so far
@@ -483,6 +492,7 @@ class QStack(nn.Module):
 
         if self.training:
             # sample proportional to the memory usage. Used in training to maximize space
+            # TODO: put this back
             probs = torch.Tensor([self.reg_buffer.n_memory] + [b.n_memory for b in self.blocks])
 
         probs = probs / probs.sum()
@@ -584,7 +594,7 @@ class QStack(nn.Module):
 
                     xx = block.decoder(xx)
                     for j, block_ in enumerate(self.blocks[::-1][i+1:]):
-                        xx = block_.decoder(xx)
+                        xx = block_.old_decoder(xx)
 
                     yield xx, yy, tt, ds_idx, block.id
 
@@ -677,7 +687,7 @@ class QStack(nn.Module):
             space_needed = (space_needed * self.mem_per_block).sum()
             space_needed = (space_needed - mem_free).clamp_(min=0.)
 
-            if space_needed == 0 and False:
+            if space_needed == 0:
                 # add all the points
                 idx_new_data = torch.arange(x.size(0))
             else:
@@ -763,7 +773,12 @@ class QStack(nn.Module):
         # 1) propagate gradient between levels
         # 2) treat every level as completely independant
 
-        for block in self.blocks:
+        for i, block in enumerate(self.blocks):
+
+            if i > 0 and block.args.downsample == 1:
+                # send in `z_e` instead of `z_q`
+                x = self.blocks[i-1].z_e
+
             if kwargs.get('inter_level_gradient', False):
                 x = x               # option 1
             else:
@@ -838,7 +853,7 @@ class QStack(nn.Module):
 
             if self.args.optimization == 'global':
                 total_loss += loss
-            else:
+            elif block.opt is not None:
                 # optimize
                 block.opt.zero_grad()
 
