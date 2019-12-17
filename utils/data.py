@@ -46,7 +46,7 @@ class XYDataset(torch.utils.data.Dataset):
 """ Template Dataset for Continual Learning """
 class CLDataLoader(object):
     def __init__(self, datasets_per_task, args, train=True):
-        test_bs, num_workers = 256, 8
+        test_bs, num_workers = 128, 8 #256, 8
 
         if 'kitti' in args.dataset:
             test_bs = 16
@@ -151,11 +151,14 @@ def get_split_cifar10(args):
     args.n_tasks   = 5
     args.n_classes = 10
     args.multiple_heads = False
-    args.n_classes_per_task = 2
     args.input_size = (3, 32, 32)
 
     if args.override_cl_defaults:
-        raise NotImplementedError
+        pass
+    else:
+        args.n_classes_per_task = 2
+
+    args.n_tasks = args.n_classes // args.n_classes_per_task
 
     # fetch data
     train = datasets.CIFAR10('../../cl-pytorch/data/', train=True,  download=True)
