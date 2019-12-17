@@ -26,7 +26,7 @@ Mean = lambda x : sum(x) / len(x)
 rescale_inv = (lambda x : x * 0.5 + 0.5)
 
 # spawn writer
-args.log_dir = join(args.run_dir, args.model_name)
+args.log_dir = join(args.run_dir, args.model_name) # + '_' + str(args.layers[0].tau))
 sample_dir   = join(args.log_dir, 'samples')
 writer       = SummaryWriter(log_dir=join(args.log_dir, 'tf'))
 writer.add_text('hyperparameters', str(args), 0)
@@ -40,8 +40,9 @@ def sho(x):
     save_image(x * .5 + .5, 'tmp.png')
     Image.open('tmp.png').show()
 
+def eval_drift_old(max_task=0):
 
-def eval_drift(max_task=-1):
+    assert max_task == 0
     with torch.no_grad():
 
         mses = []
@@ -77,10 +78,60 @@ def eval_drift(max_task=-1):
             if diff != diff: diff = torch.Tensor([0.])
 
             mses += [diff.item()]
-            generator.blocks[0].log.log('drift_mse', F.mse_loss(x_t, target))
+            generator.blocks[0].log.log('drift_mse_task0', F.mse_loss(x_t, target), per_task=False)
             generator.log(task, writer=writer, mode='buffer', should_print=False)
 
         print('DRIFT : ', mses, '\n\n')
+
+
+def eval_drift(max_task=-1):
+    with torch.no_grad():
+        '''
+        TODO:
+            1) iterate over all the data in the buffer. Proceed level by level (no need for task by task for now)
+            2) keep a drift measure for every level.
+        '''
+
+        generator.eval()
+        gen_iter = generator.sample_EVERYTHING()
+
+        all_loaders = list(train_loader)
+
+        for batch in gen_iter:
+
+            x_t, y_t, task_t, idx_t, block_id = batch
+
+            if block_id == -1: continue
+
+            target = []
+            for _idx, _task in zip(idx_t, task_t):
+                loader = all_loaders[_task]
+                if 'cifar' in args.dataset:
+                    target += [loader.dataset.rescale(loader.dataset.x[_idx])]
+                else:
+                    target += [loader.dataset.__getitem__(_idx.item())[0]]
+
+            if 'kitti' in args.dataset:
+                target = torch.from_numpy(np.stack(target))
+            else:
+                target = torch.stack(target).to(x_t.device)
+
+            target = target.to(x_t.device)
+            diff = (x_t - target).pow(2).mean(dim=(1,2,3))
+
+            # keep track of the errors on the first task
+            diff_t0 = diff[task_t == 0]
+            if diff_t0.size(0) > 0:
+                generator.blocks[0].log.log('drift_mse_task0', diff_t0.mean(), per_task=False)
+
+            # diff = diff[diff != 0.].mean()
+            # remove nan
+            # if diff != diff: diff = torch.Tensor([0.])
+
+            generator.blocks[0].log.log('drift_mse_%d' % block_id, F.mse_loss(x_t, target), per_task=False)
+            generator.blocks[0].log.log('drift_mse_total', F.mse_loss(x_t, target), per_task=False)
+
+        generator.log(task, writer=writer, mode='buffer', should_print=True)
 
 
 def eval_cls(name, max_task=-1, break_after=-1):
@@ -120,7 +171,7 @@ def eval_cls(name, max_task=-1, break_after=-1):
 
             RESULTS[run][res_idx][max_task][task_t] = mean_acc
 
-        print(RESULTS[-1, res_idx, -1].mean())
+        print(RESULTS[-1, res_idx, -1].mean(), RESULTS[-1, res_idx, -1])
         return RESULTS
 
         """ Logging """
@@ -297,6 +348,7 @@ classifier = ResNet18(args.n_classes, 20, input_size=args.input_size).to(args.de
 print("number of classifier parameters:", sum([np.prod(p.size()) for p in classifier.parameters()]))
 print('cls learning rate {:.4f}'.format(args.cls_lr))
 opt_class = torch.optim.SGD(classifier.parameters(), lr=args.cls_lr, momentum=0.9)
+# opt_class = torch.optim.Adam(classifier.parameters())
 
 last_valid_acc = 0.
 while True:
@@ -351,3 +403,4 @@ writer.add_scalar('test_classifier_acc', logs[-1, -1, -1].mean(), 0)
 
 import time
 time.sleep(10)
+print('finished')
