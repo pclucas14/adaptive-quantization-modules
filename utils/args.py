@@ -60,6 +60,7 @@ def get_default_layer_args(arglist):
 
     add('--learning_rate', type=float, default=1e-3,
             help='learning rate for the specific block')
+    add('--tau', type=float, default=1.)
 
     return parser.parse_args(arglist)
 
@@ -191,6 +192,7 @@ def get_args():
     global_args.layers = {}
 
     n_args, n_layers = len(sys.argv), len(layer_flags)
+
     # now we add layer specific params
     for i in range(len(layer_flags)):
         layer_idx   = layer_flags[i]
@@ -245,6 +247,8 @@ def get_args():
             stride = stride * 2
             global_args.layers[i].stride = stride
 
+        if global_args.layers[i].downsample == 1:
+            stride = global_args.layers[i].stride = [1,1]
 
         ''' compression rate '''
         comp_map = {1:1, 2:1, 4:2}
