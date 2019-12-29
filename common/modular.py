@@ -81,7 +81,7 @@ class QLayer(nn.Module):
 
             # same for now
             self.old_quantize = self.quantize
-            self.old_decoder  = deepcopy(self.decoder)
+            self.old_decoder  = self.decoder #deepcopy(self.decoder)
 
             assert -.01 < (self.mem_per_sample - np.prod(args.data_size) / self.comp_rate) < .01
 
@@ -103,7 +103,7 @@ class QLayer(nn.Module):
 
     def update_old_decoder(self):
         """ updates the stale decoder weights with the new ones """
-
+        return
         #self.old_decoder   = deepcopy(self.decoder)
         #return
         # self.old_quantize  = deepcopy(self.quantize)
@@ -235,13 +235,15 @@ class QLayer(nn.Module):
                         out_y = buffer.by[idx]
                         out_t = buffer.bt[idx]
                         out_idx = buffer.bidx[idx]
+                        argmins = [buffer.bx[idx]]
                     else:
                         out_x += [qt.idx_2_hid(buffer.bx[idx])]
                         assert (out_y - buffer.by[idx]).abs().sum() == 0
                         assert (out_t - buffer.bt[idx]).abs().sum() == 0
                         assert (out_idx - buffer.bidx[idx]).abs().sum() == 0
+                        argmins += [buffer.bx[idx]]
 
-                yield torch.cat(out_x, 1), out_y, out_t, out_idx
+                yield torch.cat(out_x, 1), out_y, argmins, out_t, out_idx
                 #return torch.cat(out_x, 1), out_y, out_t, out_idx
 
 
@@ -313,6 +315,9 @@ class QLayer(nn.Module):
         # TODO: should we weight these differently ?
         diffs = sum(self.diffs) / len(self.diffs)
         recon = F.mse_loss(self.output, target)
+
+        # TODO: put back
+        # recon = F.l1_loss(self.output, target)
 
         self.recon = recon.item()
         if not kwargs.get('no_log', False):
@@ -423,7 +428,6 @@ class QStack(nn.Module):
 
 
     def buffer_update_idx(self, re_x, re_y, re_t, re_ds_idx):
-
         re_target = self.all_levels_recon[:, -re_x.size(0):]
 
         per_block_l2 = (re_x.unsqueeze(0) - re_target).pow(2)
@@ -578,7 +582,7 @@ class QStack(nn.Module):
 
         for i in range(n_batches):
             idx = range(i * 128, min(reg_x.size(0), (i+1) * 128))
-            yield reg_x[idx], reg_y[idx], reg_t[idx], reg_idx[idx], -1
+            yield reg_x[idx], reg_y[idx], None, reg_t[idx], reg_idx[idx], -1
 
 
         # we reverse the blocks, so that all the decoding can be done in one pass
@@ -590,13 +594,13 @@ class QStack(nn.Module):
             try:
                 gen_iter = block.sample_EVERYTHING()
                 while True:
-                    xx, yy, tt, ds_idx  = next(gen_iter)
+                    xx, yy, argmin, tt, ds_idx  = next(gen_iter)
 
                     xx = block.decoder(xx)
                     for j, block_ in enumerate(self.blocks[::-1][i+1:]):
                         xx = block_.old_decoder(xx)
 
-                    yield xx, yy, tt, ds_idx, block.id
+                    yield xx, yy, argmin, tt, ds_idx, block.id
 
             except StopIteration:
                 i += 1
@@ -682,12 +686,14 @@ class QStack(nn.Module):
             recon_th = self.recon_th.unsqueeze(1).expand_as(per_block_l2)
             block_id = (per_block_l2 < recon_th).sum(dim=0)
 
-            # on the off chance that all samples fit in memory, add them add
+            # on the off chance that all samples fit in memory, add them all
             space_needed = F.one_hot(block_id, len(self.blocks) + 1).float()
             space_needed = (space_needed * self.mem_per_block).sum()
             space_needed = (space_needed - mem_free).clamp_(min=0.)
 
-            if space_needed == 0:
+            # UPDATE: actually adding everything when space allows it causes
+            # imbalance in the stream
+            if space_needed == 0 and False:
                 # add all the points
                 idx_new_data = torch.arange(x.size(0))
             else:
