@@ -6,6 +6,7 @@ import utils
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.distributions import Categorical, RelaxedOneHotCategorical, Normal
 
 
 class Quantize(nn.Module):
@@ -23,28 +24,26 @@ class Quantize(nn.Module):
         decay             : \gamme in EMA updates for the codebook
 
     """
-    def __init__(self, dim, num_embeddings, size=1, embed_grad_update=False,
+    def __init__(self, dim, num_embeddings, num_codebooks=1, size=1, embed_grad_update=False,
                  decay=0.99, eps=1e-5) :
         super().__init__()
 
-        if type(size) == int:
-            size = (size, size)
-
         self.dim = dim
-        self.num_embeddings = num_embeddings
-        self.decay = decay
         self.eps = eps
-        self.size = size
+        self.count = 1
+        self.decay = decay
         self.egu  = embed_grad_update
+        self.num_codebooks  = num_codebooks
+        self.num_embeddings = num_embeddings
 
-        embed = torch.randn(*self.size, dim, num_embeddings).uniform_(-.02, .02)
+        embed = torch.randn(num_codebooks, num_embeddings, dim).uniform_(-.02, .02)
 
         if self.egu:
             self.register_parameter('embed', nn.Parameter(embed))
         else:
             self.register_buffer('embed', embed)
-            self.register_buffer('cluster_size', torch.zeros(num_embeddings))
-            self.register_buffer('embed_avg', embed.clone())
+            self.register_buffer('ema_count', torch.zeros(num_codebooks, num_embeddings))
+            self.register_buffer('ema_weight', embed.clone())
 
 
     def forward(self, x):
@@ -61,67 +60,138 @@ class Quantize(nn.Module):
             perplexity (float) : codebook perplexity
         """
 
-        # put channel axis before H and W
-        x = x.permute(0, 2, 3, 1)
+        B, C, H, W = x.size()
+        N, K, D = self.embed.size()
 
-        # funky stuff in
-        bs, hH, hW, C = x.size()
-        real_hH = hH // self.size[0]
-        real_hW = hW // self.size[1]
+        import pdb
+        assert C == N * D, pdb.set_trace()
 
-        x = x.view(bs, real_hH, self.size[0], real_hW, self.size[1], C)\
-                .transpose(2,3).contiguous()
+        # B,N,D,H,W --> N, B, H, W, D
+        x = x.view(B, N, D, H, W).permute(1, 0, 3, 4, 2)
 
-        flatten = x.reshape(-1, *self.size, self.dim)
-        # Dist: squared-L2(p,q) = ||p||^2 + ||q||^2 - 2pq
+        # N, B, H, W, D --> N, BHW, D
+        x_flat = x.detach().reshape(N, -1, D)
 
-        flatten = flatten.view(flatten.size(0), -1)
+        distances = torch.baddbmm(torch.sum(self.embed ** 2, dim=2).unsqueeze(1) +
+                          torch.sum(x_flat ** 2, dim=2, keepdim=True),
+                          x_flat, self.embed.transpose(1, 2),
+                          alpha=-2.0, beta=1.0)
 
-        dist = (
-            flatten.pow(2).sum(1, keepdim=True)
-            - 2 * flatten @ self.embed.view(-1, self.embed.size(-1)) +
-            self.embed.view(-1, self.embed.size(-1)).pow(2).sum(0, keepdim=True)
-        )
-        _, embed_ind = (-dist).max(1)
-        embed_onehot = F.one_hot(embed_ind, self.num_embeddings)
-        embed_onehot = embed_onehot.type(flatten.dtype) # cast
-        embed_ind = embed_ind.view(*x.shape[:-3])
-        quantize = self.embed_code(embed_ind)
+        indices   = torch.argmin(distances, dim=-1)
+        embed_ind = indices.view(N, B, H, W).transpose(1,0)
 
-        # calculate perplexity
-        avg_probs  = F.one_hot(embed_ind, self.num_embeddings)
-        avg_probs  = avg_probs.view(-1, self.num_embeddings).float().mean(dim=0)
-        perplexity = torch.exp(-(avg_probs * (avg_probs + 1e-10).log()).sum())
+        encodings = F.one_hot(indices, K).float()
+        quantized = torch.gather(self.embed, 1, indices.unsqueeze(-1).expand(-1, -1, D))
+        quantized = quantized.view_as(x)
 
         if self.training and not self.egu:
             # EMA codebook update
-            decay = self.decay
 
-            self.cluster_size.data.mul_(self.decay).add_(
-                1 - self.decay, embed_onehot.sum(0)
-            )
-            embed_sum = flatten.transpose(0, 1) @ embed_onehot
-            self.embed_avg.data.mul_(decay).add_(1 - decay, \
-                    embed_sum.view(*self.size, self.dim, self.num_embeddings))
-            n = self.cluster_size.sum()
-            cluster_size = (self.cluster_size + self.eps) /\
-                    (n + self.num_embeddings * self.eps) * n
-            embed_normalized = self.embed_avg / cluster_size.unsqueeze(0)
-            self.embed.data.copy_(embed_normalized)
+            self.ema_count = self.decay * self.ema_count + (1 - self.decay) * torch.sum(encodings, dim=1)
 
-        diff = (quantize.detach() - x).pow(2).mean()
+            n = torch.sum(self.ema_count, dim=-1, keepdim=True)
+            self.ema_count = (self.ema_count + self.eps) / (n + K * self.eps) * n
+
+            dw = torch.bmm(encodings.transpose(1, 2), x_flat)
+            self.ema_weight = self.decay * self.ema_weight + (1 - self.decay) * dw
+
+            self.embed = self.ema_weight / self.ema_count.unsqueeze(-1)
+
+        diff = (quantized.detach() - x).pow(2).mean()
 
         if self.egu:
             # add vector quantization loss
-            diff += (quantize - x.detach()).pow(2).mean()
+            diff += (quantized - x.detach()).pow(2).mean()
 
-        quantize = x + (quantize - x).detach()
+        quantized = x + (quantized - x).detach()
 
-        # reshape to match input shape
-        quantize = quantize.transpose(3,2).reshape(bs, hH, -1, C)
-        quantize = quantize.permute(0, 3, 1, 2)
+        avg_probs = torch.mean(encodings, dim=1)
+        perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10), dim=-1))
 
-        return quantize, diff, embed_ind, perplexity
+        quantized = quantized.permute(1, 0, 4, 2, 3).reshape(B, C, H, W)
+
+        # remove this after
+        embed_ind = embed_ind
+
+        return quantized, diff, embed_ind, perplexity
+
+
+    def embed_code(self, embed_ind):
+        """ fetch elements in the codebook """
+
+        # do as in the code
+
+        D = self.embed.size(-1)
+        # B, N, H, W --> N, B, H, W
+        B, N, H, W = embed_ind.size()
+        embed_ind  = embed_ind.transpose(1,0)
+
+        # N, B, H, W --> N, BHW
+        flatten   = embed_ind.reshape(N, -1)
+        quantized = torch.gather(self.embed, 1, flatten.unsqueeze(-1).expand(-1, -1, D))
+        quantized = quantized.view(N, B, H, W, D)
+        quantized = quantized.permute(1, 0, 4, 2, 3).reshape(B, N*D, H, W)
+
+        return quantized
+
+    def idx_2_hid(self, indices):
+        """ build `z_q` from the codebook indices """
+
+        out = self.embed_code(indices)
+        return out
+
+
+class SoftQuantize(nn.Module):
+    def __init__(self, embedding_dim, num_embeddings):
+        super(SoftQuantize, self).__init__()
+
+
+        latent_dim = 1 # number of codebooks
+        self.embedding = nn.Parameter(torch.Tensor(latent_dim, num_embeddings, embedding_dim))
+        nn.init.uniform_(self.embedding, -1/num_embeddings, 1/num_embeddings)
+
+    def forward(self, x):
+        B, C, H, W = x.size()
+        N, M, D = self.embedding.size()
+        assert C == N * D
+
+        x = x.view(B, N, D, H, W).permute(1, 0, 3, 4, 2)
+        x_flat = x.reshape(N, -1, D)
+
+        distances = torch.baddbmm(torch.sum(self.embedding ** 2, dim=2).unsqueeze(1) +
+                                  torch.sum(x_flat ** 2, dim=2, keepdim=True),
+                                  x_flat, self.embedding.transpose(1, 2),
+                                  alpha=-2.0, beta=1.0)
+        distances = distances.view(N, B, H, W, M)
+
+        dist = RelaxedOneHotCategorical(0.5, logits=-distances)
+        #dist = RelaxedOneHotCategorical(1, logits=-distances)
+
+        if self.training:
+            samples = dist.rsample().view(N, -1, M)
+        else:
+            samples = torch.argmax(dist.probs, dim=-1)
+            samples = F.one_hot(samples, M).float()
+            samples = samples.view(N, -1, M)
+
+        embed_ind = torch.argmax(dist.probs, dim=-1).squeeze(0)
+
+        quantized = torch.bmm(samples, self.embedding)
+        quantized = quantized.view_as(x)
+
+        KL = dist.probs * (dist.logits + math.log(M))
+        KL[(dist.probs == 0).expand_as(KL)] = 0
+
+        # KL = KL.sum(dim=(0, 2, 3, 4)).mean()
+        KL = KL.mean()
+
+        avg_probs = torch.mean(samples, dim=1)
+        perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10), dim=-1))
+
+        # return quantize, diff, embed_ind, perplexity
+        quantized = quantized.permute(1, 0, 4, 2, 3).reshape(B, C, H, W)
+
+        return quantized, KL, embed_ind, perplexity.sum()
 
 
     def embed_code(self, embed_id):
@@ -129,20 +199,26 @@ class Quantize(nn.Module):
 
         return self.embed.permute(3, 0, 1, 2)[embed_id]
 
-
     def idx_2_hid(self, indices):
         """ build `z_q` from the codebook indices """
 
-        out = self.embed_code(indices)  # bs, H, W, s1, s2, C
-        bs, hHs, hWs, _, _, C = out.shape
-        if max(self.size) > 1:
-            out = out.transpose(3, 2).reshape(bs, hHs * self.size[0], \
-                    hWs * self.size[1], C)
-        else:
-            out = out.squeeze(-2).squeeze(-2)
+        emb = self.embedding.squeeze()
+
+        max_ = int(indices.max())
+        size = [int(x) for x in emb.size()]
+        out = emb[indices]
+        '''
+        if indices.max() > emb.size(-1):
+            import pdb; pdb.set_trace()
+            xx = 1
+        try:
+            out = emb[indices]
+        except:
+            import pdb; pdb.set_trace()
+            xx = 1
+        '''
 
         return out.permute(0, 3, 1, 2)
-
 
 
 class GumbelQuantize(nn.Module):
