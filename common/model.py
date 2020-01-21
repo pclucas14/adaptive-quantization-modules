@@ -57,14 +57,9 @@ class Encoder(nn.Module):
 
         elif downsample == 2:
             blocks = [
-                nn.Conv2d(in_channel, channel, ks, args.stride, padding=1),
-                #nn.ReLU(inplace=True),
-                #nn.Conv2d(channel // 2, channel, 3, padding=1),
-            ]
-
-        elif downsample == 1:
-            blocks = [
-                nn.Conv2d(channel, channel, 3, padding=1)
+                nn.Conv2d(in_channel, channel // 2, ks, args.stride, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(channel // 2, channel, 3, padding=1),
             ]
 
         for i in range(num_residual_layers):
@@ -124,9 +119,6 @@ class Decoder(nn.Module):
             blocks += [
                 nn.ConvTranspose2d(channel, out_channel, ks, args.stride, 1)
             ]
-
-        elif downsample == 1:
-            blocks += [nn.Conv2d(channel, out_channel, 3, padding=1)]
 
         self.blocks = nn.Sequential(*blocks)
 
