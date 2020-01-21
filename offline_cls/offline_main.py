@@ -20,13 +20,13 @@ from common.model   import ResNet18
 np.set_printoptions(threshold=3)
 
 args = get_args()
-print(args)
+print('stop' in args.suffix)
 
 Mean = lambda x : sum(x) / len(x)
 rescale_inv = (lambda x : x * 0.5 + 0.5)
 
 # spawn writer
-args.log_dir = join(args.run_dir, args.model_name) # + '_' + str(args.layers[0].tau))
+args.log_dir = join(args.run_dir, args.model_name)  + args.suffix
 sample_dir   = join(args.log_dir, 'samples')
 writer       = SummaryWriter(log_dir=join(args.log_dir, 'tf'))
 writer.add_text('hyperparameters', str(args), 0)
@@ -39,49 +39,6 @@ best_test = float('inf')
 def sho(x):
     save_image(x * .5 + .5, 'tmp.png')
     Image.open('tmp.png').show()
-
-def eval_drift_old(max_task=0):
-
-    assert max_task == 0
-    with torch.no_grad():
-
-        mses = []
-        n_eval = min(1024, generator.all_stored - 10)
-
-        if 'imagenet' in args.dataset:
-            n_eval = min(n_eval, 64)
-
-        x, y, t, idx = generator.sample_from_buffer(n_eval)
-
-        for task, loader in enumerate(train_loader):
-            if task > max_task:
-                break
-
-            x_t   = x[t == task]
-            y_t   = y[t == task]
-            idx_t = idx[t == task]
-
-            if idx_t.size(0) == 0:
-                mses += [-1.]
-                continue
-
-            if 'imagenet' in args.dataset:
-                target = [loader.dataset.__getitem__(x.item())[0] for x in idx_t]
-                target = torch.stack(target).to(x_t.device)
-            else:
-                target = loader.dataset.rescale(loader.dataset.x[idx_t]).to(x_t.device)
-
-            diff = (x_t - target).pow(2).mean(dim=(1,2,3))
-            diff = diff[diff != 0.].mean()
-
-            # remove nan
-            if diff != diff: diff = torch.Tensor([0.])
-
-            mses += [diff.item()]
-            generator.blocks[0].log.log('drift_mse_task0', F.mse_loss(x_t, target), per_task=False)
-            generator.log(task, writer=writer, mode='buffer', should_print=False)
-
-        print('DRIFT : ', mses, '\n\n')
 
 
 def eval_drift(max_task=-1):
@@ -99,7 +56,7 @@ def eval_drift(max_task=-1):
 
         for batch in gen_iter:
 
-            x_t, y_t, task_t, idx_t, block_id = batch
+            x_t, y_t, _, task_t, idx_t, block_id = batch
 
             if block_id == -1: continue
 
@@ -279,6 +236,7 @@ for run in range(args.n_runs):
         # make dataloaders
         train_loader, valid_loader, test_loader  = [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True, False, False])]
 
+        step = 0
         for task, tr_loader in enumerate(train_loader):
             for epoch in range(1):
                 generator.train()
@@ -287,6 +245,7 @@ for run in range(args.n_runs):
                 # create logging containers
                 train_log = defaultdict(list)
 
+                print('task : {} / {}'.format(task, len(train_loader)))
                 for i, (input_x, input_y, idx_) in enumerate(tr_loader):
                     if i % 5 == 0 : print('  ', i, ' / ', len(tr_loader), end='\r')
 
@@ -298,36 +257,42 @@ for run in range(args.n_runs):
                     for n_iter in range(args.n_iters):
 
                         if task > 0 and args.rehearsal:
-                            re_x, re_y, re_t, re_idx = generator.sample_from_buffer(args.buffer_batch_size)
+                            re_x, re_y, re_t, re_idx, re_step = generator.sample_from_buffer(args.buffer_batch_size)
                             data_x, data_y = torch.cat((input_x, re_x)), torch.cat((input_y, re_y))
                         else:
                             data_x, data_y = input_x, input_y
 
                         out = generator(data_x,    **kwargs)
+
                         generator.optimize(data_x, **kwargs)
 
                         if task > 0 and args.rehearsal:
                             # potentially update the indices of `re_x`, or even it's compression level
-                            generator.buffer_update_idx(re_x, re_y, re_t, re_idx)
+                            generator.buffer_update_idx(re_x, re_y, re_t, re_idx, re_step)
+
+                        if args.rehearsal and n_iter == 0:
+                            generator.add_reservoir(input_x, input_y, task, idx_, step=step)
 
                     # set the gen. weights used for sampling == current generator weights
-                    generator.update_old_decoder()
+                    generator.update_ema_decoder()
 
                     if (i+1) % 200 == 0 or (i+1) == len(tr_loader):
                         generator.log(task, writer=writer, mode='train', should_print=args.print_logs)
 
-                    if args.rehearsal:
-                        generator.add_reservoir(input_x, input_y, task, idx_)
-
+                    step += 1
 
                 # Test the model
                 # -------------------------------------------------------------------------------
-                generator.update_old_decoder()
-                eval_drift(max_task=task)
-                if task < 2 or (task % 7 == 0): eval_gen('valid', max_task=task, break_after=2)
+                # if task < 2 or (task % 7 == 0): eval_gen('valid', max_task=task, break_after=2)
+                if task % 2 == 0:
+                    eval_drift(max_task=task)
+                    eval_gen('valid', max_task=task)
 
-            buffer_sample, by, bt, _ = generator.sample_from_buffer(64)
-            save_image(rescale_inv(buffer_sample), '../samples/buf_%s_%d.png' % (args.model_name, task), nrow=8)
+            if args.rehearsal:
+                buffer_sample, by, bt, _, _ = generator.sample_from_buffer(64)
+                save_image(rescale_inv(buffer_sample), '../samples/buf_%s_%d.png' % (args.model_name, task), nrow=8)
+
+            # generator.cut_lr()
 
         # save model
         save_path = join(args.log_dir, 'gen.pth')
@@ -355,7 +320,7 @@ while True:
     tr_num, tr_den = 0, 0
     for _ in range(100):
         classifier = classifier.train()
-        input_x, input_y, input_t, _ = generator.sample_from_buffer(128)
+        input_x, input_y, input_t, _, _= generator.sample_from_buffer(128)
         input_x, input_y, input_t  = input_x.to(args.device), input_y.to(args.device), input_t.to(args.device)
 
         opt_class.zero_grad()
