@@ -19,6 +19,7 @@ from utils.kitti_utils import show_pc, from_polar
 from common.modular import QStack
 
 args = get_args()
+args.normalize = True
 print(args)
 
 # functions
@@ -26,7 +27,7 @@ Mean = lambda x : sum(x) / len(x)
 rescale_inv = (lambda x : x * 0.5 + 0.5)
 
 # spawn writer
-args.log_dir = join('rebuttal_quant_3', args.model_name)
+args.log_dir = join('new_wave', args.model_name)
 sample_dir   = join(args.log_dir, 'samples')
 writer       = SummaryWriter(log_dir=args.log_dir)
 
@@ -48,6 +49,8 @@ def eval(name, max_task=-1, break_after=-1):
             # only eval on seen tasks
             if task_t > max_task >= 0:
                 break
+
+            # if task_t not in [0, max_task]: continue
 
             for i_, (data, target, _) in enumerate(te_loader):
                 data, target = data.to(args.device), target.to(args.device)
@@ -89,7 +92,7 @@ def eval_drift(max_task=-1):
         for batch in gen_iter:
             print(batch[0].shape, batch[-1])
 
-            x_t, y_t, task_t, idx_t, block_id = batch
+            x_t, y_t, _, task_t, idx_t, block_id = batch
 
             if block_id == -1: continue
 
@@ -166,6 +169,7 @@ for run in range(args.n_runs):
     print("number of generator  parameters:", sum([np.prod(p.size()) for p \
             in generator.parameters()]))
 
+    step = 0
     for task, tr_loader in enumerate(train_loader):
 
         for epoch in range(args.num_epochs):
@@ -179,13 +183,10 @@ for run in range(args.n_runs):
                 input_x, input_y, idx_ = input_x.to(args.device), input_y.to(args.device), idx_.to(args.device)
                 if sample_amt > args.samples_per_task > 0: break
 
-                if task > 0:
-                    generator.update_old_decoder()
-
                 for n_iter in range(args.n_iters):
 
                     if task > 0 and args.rehearsal:
-                        re_x, re_y, re_t, re_idx = generator.sample_from_buffer(args.buffer_batch_size)
+                        re_x, re_y, re_t, re_idx, re_step = generator.sample_from_buffer(args.buffer_batch_size)
                         data_x, data_y = torch.cat((input_x, re_x)), torch.cat((input_y, re_y))
                     else:
                         data_x, data_y = input_x, input_y
@@ -195,21 +196,25 @@ for run in range(args.n_runs):
 
                     if task > 0 and args.rehearsal:
                         # potentially update the indices of `re_x`, or even it's compression level
-                        generator.buffer_update_idx(re_x, re_y, re_t, re_idx)
+                        generator.buffer_update_idx(re_x, re_y, re_t, re_idx, re_step)
+
+                    if args.rehearsal and n_iter == 0:
+                        #generator.add_reservoir(input_x, input_y, task, idx_, step=step)
+                        generator.add_to_buffer(input_x, input_y, task, idx_, step=step)
 
                 if (i + 1) % 40 == 0 or (i+1) == len(tr_loader):
                     generator.log(task, writer=writer, should_print=True, mode='train')
 
-                if args.rehearsal:
-                    generator.add_reservoir(input_x, input_y, task, idx_)
+                generator.update_ema_decoder()
+                step += 1
 
             # Test the model
             # -------------------------------------------------------------------------------
-            generator.update_old_decoder()
-            eval_drift(max_task=task)
-            eval('valid', max_task=task)
+            if task  % 5 == 0:
+                eval_drift(max_task=task)
+                eval('valid', max_task=task)
 
-            buffer_sample, by, bt, _ = generator.sample_from_buffer(min(64, generator.all_stored - 5))
+            buffer_sample, by, bt, _, _ = generator.sample_from_buffer(min(64, generator.all_stored - 5))
             if 'kitti' in args.dataset:
                 from utils.kitti_utils import from_polar
                 buffer_sample = buffer_sample[torch.randperm(buffer_sample.size(0))][:12]
@@ -219,8 +224,8 @@ for run in range(args.n_runs):
             else:
                 save_image(rescale_inv(buffer_sample), '../samples/buf_%s_%d.png' % (args.model_name, task), nrow=8)
 
-        # save model
-        if not args.debug:
-            save_path = join(args.log_dir, 'gen.pth')
-            print('saving model to %s' % save_path)
-            torch.save(generator.state_dict(), save_path)
+    # save model
+    if not args.debug:
+        save_path = join(args.log_dir, 'gen.pth')
+        print('saving model to %s' % save_path)
+        torch.save(generator.state_dict(), save_path)
