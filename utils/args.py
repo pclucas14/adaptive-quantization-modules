@@ -20,22 +20,14 @@ def get_default_layer_args(arglist):
             help='Embedding size, `D` in VQVAE paper')
     add('--num_embeddings', type=int, default=128,
             help='Number of embeddings to choose from, `K` in VQVAE paper')
-    add('--commitment_cost', type=float, default=1,
+    add('--commitment_cost', type=float, default=2,
             help='Beta in the loss function. from VQVAE paper')
-    add('--decay', type=float, default=0.99,
+    add('--decay', type=float, default=0.6,
             help='Moving av decay for codebook update')
-    add('--quant_size', type=int, nargs='+', default=[1],
-            help='Height of Tensor Quantization. Using value `1` results in '  +
-            'regular vector (1 x 1 x D) quantization. If you want to quantize '+
-            'H x W x D tensors, prodide the number H * 100 + D. Moreover '     +
-            'provide a number for each codebook. If you want two codebooks, '  +
-            'one with regular vector quantization, and one with 2 x 4 tensor ' +
-            'quantization, use `1 204`, or `101 204`. N.B: results reported '  +
-            'in the paper do not use matrix of tensor quantization')
-    add('--model', type=str, choices=['vqvae', 'gumbel', 'argmax', 'continuous'],
+    add('--model', type=str, choices=['vqvae', 'gumbel', 'argmax', 'continuous', 'soft'],
             default='vqvae',
             help='type of discretization to use')
-    add('--embed_grad_update', type=int, default=1,
+    add('--embed_grad_update', type=int, default=0,
             help='use `1` to train codebook with gradient updates, and `0` '   +
             'EMA updates. this flag is only relevant if `--model == vqvae')
 
@@ -47,10 +39,6 @@ def get_default_layer_args(arglist):
             help='Number of channels for ResNet. For Encoder and Decoder')
     add('--num_residual_layers', type=int, default=1,
             help='Number of residual blocks in Encoder and Decoder')
-    add('--stride', type=int, nargs='+', default=[2],
-            help='use if strides are uneven across H/W. This is useful when '  +
-            'the input is not square (e.g. LiDAR). If you want to have a '     +
-            'stride of size (1, 2), input `1 2`.')
     add('--downsample', type=int, default=1,
             help='how much to downsample the spatial resolution of the input. '+
             'the integer given here corresponds to the number of convolutions '+
@@ -60,8 +48,6 @@ def get_default_layer_args(arglist):
 
     add('--learning_rate', type=float, default=1e-3,
             help='learning rate for the specific block')
-    add('--tau', type=float, default=1.)
-
     return parser.parse_args(arglist)
 
 
@@ -77,7 +63,8 @@ def get_global_args(arglist):
     add('--run_dir', type=str, default='runs',
             help='base directory in which all experiment logs will be held')
     add('--dataset', type=str, default='split_cifar10',
-            choices=['split_cifar10','split_cifar100','miniimagenet','kitti'],
+            choices=['split_cifar10','split_cifar100','miniimagenet','kitti',
+                'kitti_img'],
             help='Dataset name')
     add('--data_size', type=int, nargs='+', default=(3, 128, 128),
             help='height / width of the input. Note that only Imagenet'        +
@@ -131,7 +118,7 @@ def get_global_args(arglist):
     add('--debug', action='store_true')
     add('--recon_th', type=float, nargs='+', default=[1e-3],
             help='satisfying reconstruction threshold')
-    add('--eps_th', type=float, default=0.005,
+    add('--eps_th', type=float, default=-1, #0.005,
             help='distortion allowed between old reconstruction and newer one '+
             'when (re) encoding an image')
 
@@ -172,6 +159,18 @@ def get_global_args(arglist):
     add('--test_on_recon', action='store_true',
             help='whether to autoencoder the input at test time')
 
+    add('--delayed_delete', type=int, default=0)
+    add('--suffix', type=str, default='')
+    add('--mask_unfrozen', type=int, default=1,
+            help='if true, only add sample to blocks with frozen embeddings')
+    add('--freeze_embeddings', type=int, default=1,
+            help='if true, freeze embeddings when block is good enough')
+    add('--use_ema', type=int, default=1,
+            help='keep EMA of decoder from which samples are drawn')
+
+    add('--modular_input', type=str, default='z_q',
+            choices=['z_q', 'z_e'])
+
     args = parser.parse_args(arglist)
 
     return args
@@ -201,11 +200,15 @@ def get_args():
         layer_args  = get_default_layer_args(sys.argv[layer_idx + 1:end_idx])
 
         ''' (for now) copy the remaining args manually '''
-        layer_args.optimization = global_args.optimization
-        layer_args.rehearsal    = global_args.rehearsal
-        layer_args.mem_size     = global_args.mem_size
-        layer_args.n_classes    = global_args.n_classes
-        layer_args.data_size    = global_args.data_size
+        layer_args.optimization  = global_args.optimization
+        layer_args.rehearsal     = global_args.rehearsal
+        layer_args.mem_size      = global_args.mem_size
+        layer_args.n_classes     = global_args.n_classes
+        layer_args.data_size     = global_args.data_size
+        layer_args.use_ema       = global_args.use_ema
+        layer_args.dataset       = global_args.dataset
+
+        layer_args.freeze_embeddings = global_args.freeze_embeddings
 
         # make sure layer does not exist yet
         assert layer_no not in global_args.layers.keys()
@@ -215,6 +218,9 @@ def get_args():
             print('overwriting the embedding dimension to == the number' +
                   'of embeddings')
             layer_args.embed_dim = layer_args.num_embeddings
+
+    if len(global_args.recon_th) == 1:
+        global_args.recon_th *= global_args.num_blocks
 
     # for now let's specify every layer via the command line
     assert n_layers == global_args.num_blocks    or global_args.gen_weights
@@ -242,13 +248,10 @@ def get_args():
 
 
         ''' stride '''
-        stride = global_args.layers[i].stride
-        if len(stride) == 1:
-            stride = stride * 2
-            global_args.layers[i].stride = stride
-
         if global_args.layers[i].downsample == 1:
             stride = global_args.layers[i].stride = [1,1]
+        else:
+            stride = global_args.layers[i].stride = [2,2]
 
         ''' compression rate '''
         comp_map = {1:1, 2:1, 4:2}
@@ -262,17 +265,8 @@ def get_args():
         total_idx = 0.
         argmin_shapes = []
 
-        for cb_idx in range(len(global_args.layers[i].quant_size)):
-            qs = global_args.layers[i].quant_size[cb_idx]
-            if qs > 100: # for now we encode quant size (4, 2) as 402
-                qH, qW = qs // 100, qs % 100
-                qs = (qH, qW)
-
-            ''' quant size '''
-            if type(qs) == int:
-                qs = (qs, qs)
-
-            global_args.layers[i].quant_size[cb_idx] = qs
+        for cb_idx in range(global_args.layers[i].num_codebooks):
+            qs  = (1,1)
 
             # count the amount of indices for a specific block
             total_idx += np.prod(current_shape) / np.prod(qs)
