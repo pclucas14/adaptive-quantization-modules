@@ -2,13 +2,17 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.data as data
+import sys
 import os
 import _pickle as pickle
 
 from PIL import Image
 from collections import OrderedDict
 
-from utils.kitti_utils import *
+try:
+    from utils.kitti_utils import *
+except:
+    pass
 
 class Kitti(data.Dataset):
     def __init__(self, args, root='/mnt/data/lpagec/kitti_data/raw', n_points_pre=2048, n_points_post=1024, task_id=-1):
@@ -23,6 +27,8 @@ class Kitti(data.Dataset):
         assert n_points_pre % n_points_post == 0
         self.pre, self.post = n_points_pre, n_points_post
         self.args = args
+
+        self.normalize = self.args.normalize
 
         # we need to build a mapper from index to path from which to load
         mapper = []
@@ -79,7 +85,7 @@ class Kitti(data.Dataset):
     def __getitem__(self, index):
         point_cloud = np.load(self.mapper[index])
         a, b, c = point_cloud.shape
-        point_cloud = preprocess(point_cloud.reshape(1, a, b, c))
+        point_cloud = preprocess(point_cloud.reshape(1, a, b, c), normalize=self.normalize)
 
         if self.args.xyz:
             point_cloud = from_polar_np(point_cloud)
@@ -116,7 +122,53 @@ class Kitti(data.Dataset):
         return len(self.mapper)
 
 
+class Kitti_Img(data.Dataset):
+
+    def get_src_data(split, root='/home/ml/lpagec/pytorch/prednet/kitti_data/numpy_versions'):
+        return np.load(os.path.join(root, 'sources_' + split + '.npy')), \
+               np.load(os.path.join(root, 'X_' + split + '.npy'))
+
+    train_s, train_data = get_src_data('train')
+    val_s,   val_data   = get_src_data('val')
+    test_s,  test_data  = get_src_data('test')
+
+    all_src  = np.concatenate((train_s, val_s, test_s))
+    all_data = torch.Tensor(np.concatenate((train_data, val_data, test_data))).float()
+    print(all_data.shape)
+
+    # all_src  = np.concatenate((val_s, test_s))
+    # all_data = torch.Tensor(np.concatenate((val_data, test_data))).float()
+    all_data = all_data.permute(0, 3, 1, 2).contiguous()
+    unique_src  = np.unique(all_src)
+
+    def __init__(self, args, task_id=-1):
+        """ assumes the same structure as when downloaded from the official site """
+        """ root should point to the directory containing city/residential/road  """
+
+        self.args = args
+
+        task_name = Kitti_Img.unique_src[task_id]
+        idx       = np.argwhere(Kitti_Img.all_src == task_name).squeeze()
+        data      = Kitti_Img.all_data[idx]
+
+        self.data = data
+        self.rescale = lambda x : (x / 255. - 0.5) * 2.
+
+    def __getitem__(self, index):
+        return self.rescale(self.data[index]), np.array([0]).squeeze(0), index
+
+    def __len__(self):
+        return len(self.data)
+
+
 if __name__ == '__main__':
+    class args:
+        pass
+    args.xyz = True
+
+    ds = Kitti_Img(args)
+
+    '''
     def show_pc(velo, ind=1, show=True):
         import matplotlib.pyplot as plt
         plt.scatter(velo[:, 0], velo[:, 1], s=0.7, color='k')
@@ -124,11 +176,6 @@ if __name__ == '__main__':
 
     show = lambda x : show_pc(from_polar_np(x.squeeze().reshape(2, -1).transpose(1,0)))
 
-    class args:
-        pass
-    args.xyz = True
-
-    ds = Kitti(args)
     xx = ds[1234]
     zz = from_polar_np(xx)
     import pdb; pdb.set_trace()
@@ -144,3 +191,4 @@ if __name__ == '__main__':
         e = time.time()
         print('{:.4f} seconds'.format(e - s))
         s = time.time()
+    '''
