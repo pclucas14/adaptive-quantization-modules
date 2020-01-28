@@ -42,46 +42,53 @@ def sho(x):
 
 def eval_drift(max_task=-1):
     with torch.no_grad():
+        '''
+        TODO:
+            1) iterate over all the data in the buffer. Proceed level by level (no need for task by task for now)
+            2) keep a drift measure for every level.
+        '''
 
-        mses = []
-        n_eval = min(1024, generator.all_stored - 10)
+        generator.eval()
+        gen_iter = generator.sample_EVERYTHING()
 
-        if 'imagenet' in args.dataset:
-            n_eval = min(n_eval, 64)
+        all_loaders = list(train_loader)
 
-        x, y, t, idx = generator.sample_from_buffer(n_eval)
+        for batch in gen_iter:
 
-        for task, loader in enumerate(train_loader):
-            if task > max_task:
-                break
+            x_t, y_t, task_t, idx_t, block_id = batch
 
-            x_t   = x[t == task]
-            y_t   = y[t == task]
-            idx_t = idx[t == task]
+            if block_id == -1: continue
 
-            if idx_t.size(0) == 0:
-                mses += [-1.]
-                continue
+            target = []
+            for _idx, _task in zip(idx_t, task_t):
+                loader = all_loaders[_task]
+                try:
+                    if 'cifar' in args.dataset:
+                        target += [loader.dataset.rescale(loader.dataset.x[_idx])]
+                    else:
+                        target += [loader.dataset.__getitem__(_idx.item())[0]]
+                except:
+                    import pdb; pdb.set_trace()
+                    xx = 1
 
-            if 'imagenet' in args.dataset:
-                target = [loader.dataset.__getitem__(x.item())[0] for x in idx_t]
-                target = torch.stack(target).to(x_t.device)
+            if 'kitti' in args.dataset:
+                target = torch.from_numpy(np.stack(target))
             else:
-                target = loader.dataset.rescale(loader.dataset.x[idx_t])
-                target = target.to(x_t.device)
+                target = torch.stack(target).to(x_t.device)
 
+            target = target.to(x_t.device)
             diff = (x_t - target).pow(2).mean(dim=(1,2,3))
             diff = diff[diff != 0.].mean()
 
             # remove nan
             if diff != diff: diff = torch.Tensor([0.])
 
-            mses += [diff.item()]
-            generator.blocks[0].log.log('drift_mse', F.mse_loss(x_t, target))
-            generator.log(task, writer=writer, mode='buffer', \
-                    should_print=args.print_logs)
+            #mses += [diff.item()]
+            generator.blocks[0].log.log('drift_mse_%d' % block_id, F.mse_loss(x_t, target), per_task=False)
+            generator.blocks[0].log.log('drift_mse_total', F.mse_loss(x_t, target), per_task=False)
 
-        print('DRIFT : ', mses, '\n\n')
+        generator.log(task, writer=writer, mode='buffer', should_print=True)
+
 
 
 def eval(name, max_task=-1):
@@ -184,12 +191,15 @@ for run in range(args.n_runs):
 
     # optimizers
     opt_class = torch.optim.SGD(classifier.parameters(), lr=args.cls_lr)
+    # opt_class = torch.optim.Adam(classifier.parameters(), lr=4e-4)
 
     print("number of generator  parameters:", \
             sum([np.prod(p.size()) for p in generator.parameters()]))
     print("number of classifier parameters:", \
             sum([np.prod(p.size()) for p in classifier.parameters()]))
 
+
+    step = 0
     for task, tr_loader in enumerate(train_loader):
 
         for epoch in range(args.num_epochs):
@@ -213,7 +223,7 @@ for run in range(args.n_runs):
                 for n_iter in range(args.n_iters):
 
                     if task > 0 and args.rehearsal:
-                        re_x, re_y, re_t, re_idx = \
+                        re_x, re_y, re_t, re_idx, re_step = \
                                 generator.sample_from_buffer(input_x.size(0))
 
                         data_x = torch.cat((input_x, re_x))
@@ -225,7 +235,7 @@ for run in range(args.n_runs):
                     generator.optimize(data_x, **kwargs)
 
                     if task > 0 and args.rehearsal:
-                        generator.buffer_update_idx(re_x, re_y, re_t, re_idx)
+                        generator.buffer_update_idx(re_x, re_y, re_t, re_idx, re_step)
 
                     if n_iter < args.cls_n_iters:
                         opt_class.zero_grad()
@@ -253,7 +263,7 @@ for run in range(args.n_runs):
                         opt_class.step()
 
                 # set the gen. weights used for sampling == current generator weights
-                generator.update_old_decoder()
+                generator.update_ema_decoder()
 
                 # add compressed rep. to buffer (ONLY during last epoch)
                 if (i+1) % 20 == 0 or (i+1) == len(tr_loader):
@@ -261,21 +271,27 @@ for run in range(args.n_runs):
                             should_print='kitti' in args.dataset )
 
                 if args.rehearsal:
-                    generator.add_reservoir(input_x, input_y, task, idx_)
+                    generator.add_reservoir(input_x, input_y, task, idx_, step=step)
+                    #generator.add_to_buffer(input_x, input_y, task, idx_, step=step)
 
+                step += 1
 
             # Test the model
             # ------------------------------------------------------------------
-            generator.update_old_decoder()
-            eval_drift(max_task=task)
-            eval('valid', max_task=task)
-            eval('test',  max_task=task)
-
-        buffer_sample, by, bt, _ = generator.sample_from_buffer(64)
+            generator.update_ema_decoder()
+            # eval_drift(max_task=task)
+        buffer_sample, by, bt, _, _ = generator.sample_from_buffer(64)
         save_image(rescale_inv(buffer_sample), '../samples/buf__%s_%d.png' % \
                 (args.model_name, task), nrow=8)
+        eval('valid', max_task=task)
+    eval('test',  max_task=task)
 
     print(RESULTS[:, 0, -1].mean(), RESULTS[:, 1, -1].mean())
+
+# save model
+save_path = join(args.log_dir, 'gen.pth')
+print('saving model to %s' % save_path)
+torch.save(generator.state_dict(), save_path)
 
 np.save(join(args.log_dir, 'results'), RESULTS)
 
