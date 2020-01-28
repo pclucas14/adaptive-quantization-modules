@@ -68,6 +68,26 @@ class CLDataLoader(object):
         return len(self.loaders)
 
 
+def get_kitti_img(args):
+
+    if args.override_cl_defaults:
+        raise NotImplementedError
+
+    args.n_classes = 1
+
+    # get datasets
+    args.input_size = (3, 128, 160)
+
+    from utils.kitti_loader import Kitti_Img
+    n_tasks = len(Kitti_Img.unique_src)
+    print('n_tasks %d' % n_tasks)
+
+    all_ds = [Kitti_Img(args, task_id=i) for i in range(n_tasks)]
+
+    train_ds, val_ds = all_ds[n_tasks // 2:], all_ds[:n_tasks // 2]
+
+    return train_ds, val_ds, val_ds
+
 """ Kitti Lidar continual dataset """
 def get_kitti(args):
 
@@ -389,6 +409,10 @@ def get_miniimagenet(args):
     all_data  = np.array(train_data  + valid_data  + test_data)
     all_label = np.array(train_label + valid_label + test_label)
 
+    # TODO: remove this
+    # all_data = all_data[::-1]
+    # all_label = all_label[::-1]
+
 
     train_ds, valid_ds, test_ds = [], [], []
     current_train, current_val, current_test = None, None, None
@@ -461,3 +485,11 @@ def make_valid_from_train(dataset, cut=0.9):
         val_ds += [(x_val, y_val)]
 
     return tr_ds, val_ds
+
+if __name__ == '__main__':
+    class args:
+        pass
+
+    args.override_cl_defaults = False
+
+    get_kitti_img(args)
