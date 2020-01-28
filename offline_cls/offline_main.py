@@ -147,6 +147,7 @@ def eval_cls(name, max_task=-1, break_after=-1):
 
 
 def eval_gen(name, max_task=-1, break_after=-1):
+
     """ evaluate performance on held-out data """
     with torch.no_grad():
         generator.eval()
@@ -162,7 +163,9 @@ def eval_gen(name, max_task=-1, break_after=-1):
             for i_, (data, target, _) in enumerate(te_loader):
                 data, target = data.to(args.device), target.to(args.device)
 
+                # TODO: use ema
                 outs = generator.reconstruct_all_levels(data)
+                outs = generator.reconstruct_all_levels(data, **{'ema_decoder':True})
                 out  = generator(data,    **kwargs)
 
                 if i_ > break_after > 0: break
@@ -238,6 +241,8 @@ for run in range(args.n_runs):
 
         step = 0
         for task, tr_loader in enumerate(train_loader):
+            if task > args.max_task > -1: break
+
             for epoch in range(1):
                 generator.train()
                 sample_amt = 0
@@ -271,7 +276,8 @@ for run in range(args.n_runs):
                             generator.buffer_update_idx(re_x, re_y, re_t, re_idx, re_step)
 
                         if args.rehearsal and n_iter == 0:
-                            generator.add_reservoir(input_x, input_y, task, idx_, step=step)
+                            # generator.add_reservoir(input_x, input_y, task, idx_, step=step)
+                            generator.add_to_buffer(input_x, input_y, task, idx_, step=step)
 
                     # set the gen. weights used for sampling == current generator weights
                     generator.update_ema_decoder()
@@ -284,7 +290,7 @@ for run in range(args.n_runs):
                 # Test the model
                 # -------------------------------------------------------------------------------
                 # if task < 2 or (task % 7 == 0): eval_gen('valid', max_task=task, break_after=2)
-                if task % 2 == 0:
+                if task % 4 == 0 or task < 3 or task == 19:
                     eval_drift(max_task=task)
                     eval_gen('valid', max_task=task)
 
@@ -295,9 +301,10 @@ for run in range(args.n_runs):
             # generator.cut_lr()
 
         # save model
-        save_path = join(args.log_dir, 'gen.pth')
-        print('saving model to %s' % save_path)
-        torch.save(generator.state_dict(), save_path)
+        if not args.debug:
+            save_path = join(args.log_dir, 'gen.pth')
+            print('saving model to %s' % save_path)
+            torch.save(generator.state_dict(), save_path)
 
 generator.cuda()
 generator.eval()
@@ -313,12 +320,13 @@ classifier = ResNet18(args.n_classes, 20, input_size=args.input_size).to(args.de
 print("number of classifier parameters:", sum([np.prod(p.size()) for p in classifier.parameters()]))
 print('cls learning rate {:.4f}'.format(args.cls_lr))
 opt_class = torch.optim.SGD(classifier.parameters(), lr=args.cls_lr, momentum=0.9)
-# opt_class = torch.optim.Adam(classifier.parameters())
 
 last_valid_acc = 0.
-while True:
+epoch = 0
+while not args.debug or epoch < 1:
+    epoch += 1
     tr_num, tr_den = 0, 0
-    for _ in range(100):
+    for _ in range(1 if args.debug else 100):
         classifier = classifier.train()
         input_x, input_y, input_t, _, _= generator.sample_from_buffer(128)
         input_x, input_y, input_t  = input_x.to(args.device), input_y.to(args.device), input_t.to(args.device)
@@ -343,7 +351,6 @@ while True:
     valid_acc = eval_cls('valid')
     valid_acc = valid_acc[-1, 0, -1].mean()
 
-
     if valid_acc > last_valid_acc:
         save_path = join(args.log_dir, 'cls.pth')
         print('saving cls to %s' % save_path)
@@ -357,6 +364,7 @@ writer.add_scalar('valid_classifier_acc', last_valid_acc, 0)
 
 # make histogram with all the values
 hist = make_histogram(RESULTS[-1, 0, -1], 'Valid Accuracy')
+Image.fromarray(hist.transpose(1,2,0)).save(os.path.join(args.log_dir, 'valid_acc.png'))
 writer.add_image('Valid. Set Acc', hist, 0)
 
 # test set eval
@@ -365,6 +373,8 @@ classifier.load_state_dict(torch.load(os.path.join(args.log_dir, 'cls.pth')))
 logs = eval_cls('test')
 np.savetxt(os.path.join(args.log_dir, 'test_acc.txt'), logs[-1, -1, -1])
 writer.add_scalar('test_classifier_acc', logs[-1, -1, -1].mean(), 0)
+
+np.save(os.path.join(args.log_dir, 'results'), RESULTS)
 
 import time
 time.sleep(10)
