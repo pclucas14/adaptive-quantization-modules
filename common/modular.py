@@ -35,9 +35,6 @@ class QLayer(nn.Module):
         else:
             self.encoder = self.decoder = lambda x : x
 
-        assert args.num_codebooks == len(args.quant_size), \
-                'amt of codebooks must match with codebook stride'
-
         # build quantization blocks
         qt    = []
         dtype = torch.LongTensor
@@ -53,23 +50,21 @@ class QLayer(nn.Module):
             except:
                 self.opt = None
 
-        if True: #args.rehearsal:
-            self.mem_per_sample = 0
-            self.comp_rate   = args.comp_rate
+        self.comp_rate   = args.comp_rate
 
-            # whether or not embedding matrix is frozen
-            self.frozen_qt   = False
+        # whether or not embedding matrix is frozen
+        self.frozen_qt   = False
 
+        argmin_shp = (self.args.num_codebooks, ) + tuple(self.args.argmin_shapes[0])
+        assert sum([x != self.args.argmin_shapes[0] for x in self.args.argmin_shapes[1:]]) == 0, pdb.set_trace()
+        self.buffer = Buffer(argmin_shp, args.n_classes, max_idx=args.num_embeddings)
+        self.mem_per_sample = self.buffer.mem_per_sample
 
-            argmin_shp = (self.args.num_codebooks, ) + tuple(self.args.argmin_shapes[0])
-            assert sum([x != self.args.argmin_shapes[0] for x in self.args.argmin_shapes[1:]]) == 0, pdb.set_trace()
-            self.buffer = Buffer(argmin_shp, args.n_classes, max_idx=args.num_embeddings)
+        # same for now
+        self.old_quantize = self.quantize
+        self.ema_decoder  = self.decoder
 
-            # same for now
-            self.old_quantize = self.quantize #deepcopy(self.quantize)
-            self.ema_decoder  = self.decoder  #deepcopy(self.decoder)
-
-            assert -.01 < (self.buffer.mem_per_sample - np.prod(args.data_size) / self.comp_rate) < .01
+        assert -.01 < (self.buffer.mem_per_sample - np.prod(args.data_size) / self.comp_rate) < .01
 
 
     @property
@@ -86,7 +81,6 @@ class QLayer(nn.Module):
         if not self.frozen_qt or not self.args.use_ema:
             return
 
-        # decay = .9
         decay = .99
         try:
             for ema_param, param in zip(self.ema_decoder.parameters(), self.decoder.parameters()):
@@ -94,9 +88,11 @@ class QLayer(nn.Module):
         except:
             pass
 
+
     def init_ema(self):
         if self.args.use_ema:
             self.ema_decoder = deepcopy(self.decoder)
+
 
     def add_to_buffer(self, argmins, y, t, ds_idx, idx=None, step=0):
         """ adds indices to layer buffer """
@@ -223,7 +219,8 @@ class QLayer(nn.Module):
 
         z_q, diff, argmin, ppl = self.quantize(z_e)
 
-        if self.avg_comp > .75 and not self.frozen_qt:
+        # Used to be 75 --> now 90
+        if self.avg_comp > .90 and not self.frozen_qt and self.args.freeze_embeddings:
             print('fixing Block %d' % self.id)
             self.quantize.decay = 1.
             self.frozen_qt = True
@@ -268,7 +265,11 @@ class QLayer(nn.Module):
 
         diffs = self.diffs
 
-        recon = F.mse_loss(self.output, target)
+        if self.args.dataset == 'kitti':
+            # lidar so l1 loss
+            recon = F.l1_loss(self.output, target)
+        else:
+            recon = F.mse_loss(self.output, target)
 
         self.recon = recon.item()
         if not kwargs.get('no_log', False):
@@ -368,9 +369,6 @@ class QStack(nn.Module):
         for block in self.blocks:
             total += block.n_memory
 
-        self.mem_used_ = total
-        self.up_to_date_mu = True
-
         return total
 
 
@@ -399,6 +397,12 @@ class QStack(nn.Module):
 
 
     def buffer_update_idx(self, re_x, re_y, re_t, re_ds_idx, re_step):
+        # If more than 5% of memory is already free, ski this step
+        if float(self.mem_used) / self.mem_size < .95: # instead of 90
+            ratio = float(self.mem_used) / self.mem_size
+            # print('currently at {:.4f}'.format(ratio))
+            return
+
         with torch.no_grad():
             re_target = self.all_levels_recon[:, -re_x.size(0):]
 
@@ -443,6 +447,10 @@ class QStack(nn.Module):
             same_lvl_amt = (pre_block_id == new_block_id).sum()
             jump01_amt   = ((pre_block_id == 0) * (new_block_id == 1)).sum()
             jump12_amt   = ((pre_block_id == 1) * (new_block_id == 2)).sum()
+
+            if self.blocks[0].frozen_qt:
+                jump = jump01_amt + jump12_amt
+                # print('jump {} / {}'.format(jump.item(), re_x.size(0)))
 
             self.blocks[0].log.log('same_lvl', same_lvl_amt, per_task=False)
             self.blocks[0].log.log('jump01', jump01_amt, per_task=False)
@@ -598,24 +606,178 @@ class QStack(nn.Module):
                     i += 1
 
 
+    def add_to_buffer(self, x, y, t, ds_idx, step=0, **kwargs):
+        with torch.no_grad():
+
+            # first we add all incoming points
+            target = self.all_levels_recon[:, :x.size(0)]
+
+            # now that we know which samples will be added to the buffer,
+            # we need to find the most compressed representation that is good enough
+
+            per_block_l2 = (x.unsqueeze(0) - target).pow(2)
+            per_block_l2 = per_block_l2.mean(dim=(2,3,4))
+            self.avg_l2  = self.avg_l2   * 0.99 + .01 * per_block_l2.mean(-1).flip(0)
+
+            recon_th  = self.recon_th.unsqueeze(1).expand_as(per_block_l2)
+            block_id  = (per_block_l2 < recon_th)
+            comp_rate = block_id.float().mean(dim=1).flip(0)
+
+            if self.args.mask_unfrozen:
+                frozen = torch.Tensor([block.frozen_qt for block in self.blocks])
+                frozen = frozen.view(-1, 1).expand_as(per_block_l2).to(per_block_l2.device)
+
+                # reconstruction thresholds are ordered from most compressed to least compressed
+                frozen = frozen.flip(0)
+
+                super_high_value = torch.ones_like(frozen).fill_(1e9)
+                per_block_l2 = per_block_l2 * frozen + (1 - frozen) * super_high_value
+
+            block_id  = (per_block_l2 < recon_th)
+
+            # say block 2 fits its criteria, but not block 1. make sure the sum to
+            # come does not give you 1
+            block_id = block_id.cumsum(dim=0).clamp_(max=1)
+            block_id = block_id.sum(dim=0)
+
+            # block_ids are off-by-1: block_id == 0 means regular buffer, not block 0
+            # let's shift everything so that block_id == 0 means block 0
+            block_id = block_id - 1
+
+            # now that we know which samples goes where, we can add them
+            # self.reg_buffer.add(x[block_id == 0], y[block_id == 0], t, ds_idx[block_id == 0],  step)
+            self.reg_buffer.add(x[block_id == -1], y[block_id == -1], t, ds_idx[block_id == -1],  step)
+
+            for i, block in enumerate(self.blocks):
+                # add new points
+                # block.add_to_buffer(block.argmins, y, t, ds_idx, idx=(block_id == (i+1)), step=step)
+                block.add_to_buffer(block.argmins, y, t, ds_idx, idx=(block_id == i), step=step)
+
+                # log
+                block.avg_comp = block.avg_comp * 0.99 + .01 * comp_rate[i].item()
+                block.log.log('buffer-%d-comp_rate' % block.id, block.avg_comp, per_task=False)
+                block.log.log('buffer-%d-avg_l2'    % block.id, self.avg_l2[i].item(), per_task=False)
+
+
+            # now that points are added, we may need to remove some in order to fit in memory
+            should_free = self.mem_used - self.mem_size
+
+            if should_free > 0:
+                steps = torch.cat([self.reg_buffer.bstep] + [x.buffer.bstep for x in self.blocks])
+                ids   = torch.cat([torch.LongTensor(x.n_samples).fill_(x.id) for x in self.blocks]).to(steps.device)
+                block_specific_idx = torch.cat([torch.arange(self.reg_buffer.n_samples)] + [torch.arange(x.n_samples) for x in self.blocks])
+
+                # we use `-1` to denote the uncompressed samples
+                ids   = torch.cat((torch.LongTensor(self.reg_buffer.n_samples).fill_(-1).to(ids.device), ids))
+
+                # sort chronologically
+                sorted_steps, sorted_idx = steps.sort()
+                sorted_ids               = ids[sorted_idx]
+                block_specific_idx       = block_specific_idx[sorted_idx]
+
+                WIDTH = 4
+                to_odd = lambda x : x+1 if x % 2 == 0 else x
+                window_size = min(to_odd(self.can_store_reg), to_odd(self.all_stored))
+                missing_per_side = window_size // 2
+
+                window = sorted_steps.unfold(0, int(window_size), 1)
+                left   = window[0].unsqueeze(0).expand(missing_per_side, -1)
+                right  = window[-1].unsqueeze(0).expand(missing_per_side, -1)
+                window = torch.cat((left, window, right))
+
+                delta = (sorted_steps.view(-1, 1) - window).float()
+                '''
+                WIDTH = 5
+                delta = (sorted_steps.view(-1, 1) - sorted_steps.view(1, -1)).float()
+                '''
+                kernel_input = (-delta ** 2 / (2*WIDTH**2)).exp().div_(WIDTH * np.sqrt(2 * np.pi))
+                kernel = kernel_input.mean(1)
+
+                kernel = F.softmax(kernel / 1e-4)
+                # kernel = kernel / kernel.sum()
+
+                # sample according to kernel
+                best_block_used = ids.max()
+                if best_block_used == -1:
+                    n_samples = np.ceil(should_free / self.reg_buffer.mem_per_sample)
+                else:
+                    n_samples = np.ceil(should_free / self.blocks[best_block_used].mem_per_sample)
+
+                assert kernel.size(0) > n_samples
+
+                if self.n_seen_so_far > 2000 and False:
+                    import matplotlib.pyplot as plt
+                    from PIL import Image
+                    plt.plot(sorted_steps.cpu().numpy(), kernel.cpu().numpy())
+                    plt.ylim(0, kernel.max().item())
+                    plt.xlim(0, sorted_steps.max().item())
+                    plt.title('kernel')
+                    plt.savefig('tmpa.png')
+                    Image.open('tmpa.png').show()
+
+                    plt.cla()
+                    bins = np.linspace(0, steps.max().item(), 100)
+                    plt.hist(sorted_steps.cpu().numpy(), bins=bins)
+                    plt.savefig('tmpd.png')
+                    Image.open('tmpd.png').show()
+                    import pdb; pdb.set_trace()
+
+                idx_sample = torch.multinomial(kernel, int(n_samples), replacement=False)
+                # idx_sample = kernel.topk(int(n_samples))[1]
+                id_sample  = sorted_ids[idx_sample]
+
+                # import pdb; pdb.set_trace()
+                # print(sorted_steps[idx_sample].float().mean(), sorted_steps.float().mean())
+
+                # all that remains is to subsample this sample prop. to memory usage
+                samples_per_block = id_sample.new(id_sample.size(0), len(self.blocks) + 1).fill_(0)
+                samples_per_block = samples_per_block.scatter_(1, id_sample.view(-1, 1) + 1, 1).sum(0)
+                # [reg_buffer_samples, b0_samples, ..., bn_samples]
+                mem_per_block     = samples_per_block * self.mem_per_block
+                prob_per_block    = mem_per_block / mem_per_block.sum()
+                to_be_sampled     = ((prob_per_block * should_free)  / self.mem_per_block).ceil().long()
+
+                # remove uncompressed
+                if to_be_sampled[0] > 0:
+                    valid_idx = idx_sample[id_sample == -1]
+                    drawn_idx = valid_idx[torch.randperm(valid_idx.size(0))[:to_be_sampled[0]]]
+                    drawn_idx = block_specific_idx[drawn_idx]
+                    self.reg_buffer.free(idx=drawn_idx)
+
+                for block in self.blocks:
+                    i = block.id + 1
+                    if to_be_sampled[i] > 0:
+
+                        valid_idx = idx_sample[id_sample == block.id]
+                        drawn_idx = valid_idx[torch.randperm(valid_idx.size(0))[:to_be_sampled[i]]]
+                        drawn_idx = block_specific_idx[drawn_idx]
+                        block.buffer.free(idx=drawn_idx)
+
+
+            """ Making sure everything is behaving as expected """
+
+            import pdb
+            assert self.mem_size >= self.mem_used, pdb.set_trace()
+
+            # update statistic
+            self.n_seen_so_far += x.size(0)
+
+            for block in self.blocks:
+                block.log.log('buffer-samples-B%d' % block.id, block.n_samples, per_task=False)
+
+            block.log.log('buffer_samples-reg', self.reg_stored, per_task=False)
+            block.log.log('buffer-mem', self.mem_used, per_task=False)
+            block.log.log('n_seen_so_far', self.n_seen_so_far, per_task=False)
+
+
+
+
+
     def add_reservoir(self, x, y, t, ds_idx, step=0, **kwargs):
         """ Reservoir Sampling Buffer Addition """
 
         with torch.no_grad():
             mem_free = self.mem_size - self.mem_used
-            '''
-            can_store_uncompressed = csu = int(min((mem_free) // x[0].numel(), x.size(0)))
-
-            if can_store_uncompressed > 0:
-                self.reg_buffer.add(x[:csu], y[:csu], t, ds_idx[:csu], swap_idx=None)
-                x, y, ds_idx = x[csu:], y[csu:], ds_idx[csu:]
-
-                # update statistic
-                self.n_seen_so_far += csu
-
-                # mark the buffer stats as needing update
-                self.up_to_date(False)
-            '''
 
             if x.size(0) > 0:
                 # in reservoir sampling, samples should be added with
@@ -723,7 +885,6 @@ class QStack(nn.Module):
                 # finally, we iterate over the blocks and add / remove the required samples
                 # 0th block (uncompressed)
 
-                # TODO: put this back! only to debug free method
                 self.reg_buffer.free(tbr_per_block_n_samples[0])
                 self.reg_buffer.add(x[block_id == 0], y[block_id == 0], t, ds_idx[block_id == 0],  step)
 
@@ -778,20 +939,13 @@ class QStack(nn.Module):
 
         for i, block in enumerate(self.blocks):
 
-            if i > 0: # and block.args.downsample == 1:
-                '''
-                # send in `z_e` instead of `z_q`
-                if block.args.downsample == 1:
-                    # x = last_same_size_zq
-
-                    # TODO LUCAS (left here)
-                    x = last_same_size_ze
+            if i > 0:
+                if self.args.modular_input == 'z_q':
+                    x = last_same_size_zq
                 else:
-                    x = self.blocks[i-1].z_e
-                '''
-                x = last_same_size_zq
+                    x = last_same_size_ze
 
-            if kwargs.get('inter_level_gradient', False):
+            if self.args.optimization == 'global':
                 x = x               # option 1
             else:
                 x = x.detach()      # option 2
@@ -873,13 +1027,8 @@ class QStack(nn.Module):
             elif block.opt is not None:
                 # optimize
                 block.opt.zero_grad()
-
-                # TODO: retain graph if inter_level_gradient is on
-                loss.backward() #retain_graph=(i+1) != len(self.blocks))
-
+                loss.backward()
                 block.opt.step()
-
-                #block.update_unused_vectors()
 
         if self.args.optimization == 'global':
             self.opt.zero_grad()
@@ -927,16 +1076,25 @@ class QStack(nn.Module):
             out_levels = []
             for i, block in enumerate(reversed(self.blocks)):
                 # current block
-                x = block.decoder(block.z_q)
+
+                if kwargs.get('ema_decoder', False):
+                    x = block.ema_decoder(block.z_q)
+                else:
+                    x = block.decoder(block.z_q)
+
                 for j, block_ in enumerate(self.blocks[::-1][i+1:]):
-                    x = block_.decoder(x)
+                    if kwargs.get('ema_decoder', False):
+                        x = block_.ema_decoder(x)
+                    else:
+                        x = block_.decoder(x)
 
                 # store output
                 out_levels += [x]
 
-                # log reconstruction error
-                #block.log.log('Full_recon-B%d' % block.id, F.l1_loss(x, og))
-                block.log.log('Full_recon-B%d' % block.id, F.mse_loss(x, og))
+                name = 'Full_recon-B%d' % block.id
+                if kwargs.get('ema_decoder', False): name += '_ema'
+                # block.log.log(name, F.mse_loss(x, og))
+                block.log.log(name, F.mse_loss(x, og), per_task=False)
 
             return out_levels
 
@@ -948,6 +1106,7 @@ class QStack(nn.Module):
         if 'kitti' not in self.args.dataset:
             self.log_buffer()
 
+        prefix = None
         if writer is not None:
             for block in self.blocks:
                 for name, value in block.log.storage.items():
@@ -958,17 +1117,18 @@ class QStack(nn.Module):
                         suffix = ''
 
                     if type(value) == np.ndarray:
-                        # Tensorboard's histogram is awful. Let's make an image instead
-                        tmp_path = os.path.join(self.args.log_dir, 'tmp.png')
-                        hist = make_histogram(value, prefix + name + suffix, tmp_path=tmp_path)
-                        writer.add_image(prefix + name + suffix, hist, self.log_step)
+                        if mode == 'buffer':
+                            # Tensorboard's histogram is awful. Let's make an image instead
+                            tmp_path = os.path.join(self.args.log_dir, 'tmp.png')
+                            hist = make_histogram(value, prefix + name + suffix, tmp_path=tmp_path)
+                            writer.add_image(prefix + name + suffix, hist, self.log_step)
                     else:
                         writer.add_scalar(prefix + name + suffix, value, self.log_step)
 
             self.log_step += 1
 
         if should_print:
-            print(prefix)
+            if prefix is not None: print(prefix)
             for block in self.blocks:
                 print(block.log.one_liner())
             print('\n')
