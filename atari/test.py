@@ -9,6 +9,8 @@ from torch.nn import functional as F
 from tensorboardX import SummaryWriter
 from torchvision.utils import save_image
 
+np.seterr(all='raise')
+
 sys.path.append('../')
 sys.path.append('../../atari-representation-learning')
 
@@ -29,9 +31,10 @@ args = get_args()
 rescale_inv = (lambda x : x * 0.5 + 0.5)
 
 # spawn writer
-args.log_dir = join(args.run_dir, args.model_name)  + args.suffix
-sample_dir   = join(args.log_dir, 'samples')
-writer       = SummaryWriter(log_dir=join(args.log_dir, 'tf'))
+args.model_name =  args.model_name + '_%s' % args.rl_env
+args.log_dir    = join(args.run_dir, args.model_name)  + args.suffix
+sample_dir      = join(args.log_dir, 'samples')
+writer          = SummaryWriter(log_dir=join(args.log_dir, 'tf'))
 writer.add_text('hyperparameters', str(args), 0)
 
 assert tuple(args.data_size) == (3, 210, 160)
@@ -73,6 +76,8 @@ for task, episode in enumerate(tr_episodes):
         input_x = episode[batch * args.batch_size: (batch+1) * args.batch_size]
         next_x  = next_frame[batch * args.batch_size: (batch+1) * args.batch_size]
 
+        if input_x.size(0) == 0: continue
+
         if sample_amt > args.samples_per_task > 0 : break
         sample_amt += input_x.size(0)
 
@@ -108,17 +113,33 @@ for task, episode in enumerate(tr_episodes):
     generator.log(task, writer=writer, mode='train', should_print=args.print_logs)
 
 
-    '''
-    # Test the model
-    # -------------------------------------------------------------------------------
-    # if task < 2 or (task % 7 == 0): eval_gen('valid', max_task=task, break_after=2)
-    if task % 4 == 0 or task < 3 or task == 19:
-        eval_drift(max_task=task)
-        eval_gen('valid', max_task=task)
-    '''
-
     if args.rehearsal:
         buffer_sample, by, bt, _, _ = generator.sample_from_buffer(64)
         # save_image(rescale_inv(buffer_sample), '../samples/buf_%s_%d.png' % (args.model_name, task), nrow=8)
-        save_image(rescale_inv(buffer_sample), '../samples/buf_%s_%d.png' % ('atari', task), nrow=8)
+        save_image(rescale_inv(buffer_sample), '../samples/buf_%s_%d.png' % (args.rl_env, task), nrow=8)
+
+
+# save model (and buffer)
+if not args.debug:
+    save_path = join(args.log_dir, 'gen.pth')
+    print('saving model to %s' % save_path)
+    torch.save(generator.state_dict(), save_path)
+
+
+""" If you want to sample from the model """
+if False:
+    gen_iter = generator.sample_EVERYTHING()
+
+    for batch in gen_iter:
+
+        x, _, _, _, block_id = batch
+
+        # block_id == -1 means its stored in the regular buffer
+        if block_id == -1: continue
+
+        # do what you want with x from here
+
+
+
+
 
