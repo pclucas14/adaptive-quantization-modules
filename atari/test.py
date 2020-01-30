@@ -37,6 +37,10 @@ sample_dir      = join(args.log_dir, 'samples')
 writer          = SummaryWriter(log_dir=join(args.log_dir, 'tf'))
 writer.add_text('hyperparameters', str(args), 0)
 
+print_and_save_args(args, args.log_dir)
+print('logging into %s' % args.log_dir)
+maybe_create_dir(sample_dir)
+
 assert tuple(args.data_size) == (3, 210, 160)
 
 # fetch model and ship to GPU
@@ -47,7 +51,7 @@ env_name = {'pitfall':"PitfallNoFrameskip-v4", 'pong':"PongNoFrameskip-v4", 'msp
 tr_episodes, val_episodes,\
 tr_labels, val_labels,\
 test_episodes, test_labels = get_episodes(env_name=env_name,
-                                     steps=50000,
+                                     steps=40000,
                                      collect_mode="random_agent",
                                      color=True)
 
@@ -84,7 +88,7 @@ for task, episode in enumerate(tr_episodes):
         input_x  = input_x.to(args.device)
         input_y = idx_ = torch.ones(input_x.size(0)).to(args.device).long()
 
-        for n_iter in range(args.n_iters):
+        for n_iter in range(1 if generator.blocks[0].frozen_qt else args.n_iters):
 
             if task > 0 and args.rehearsal:
                 re_x, re_y, re_t, re_idx, re_step = generator.sample_from_buffer(args.buffer_batch_size)
@@ -128,6 +132,10 @@ if not args.debug:
 
 """ If you want to sample from the model """
 if False:
+    # load the model
+    generator, args = load_model_from_file(args.gen_weights)
+
+    # then sample from it
     gen_iter = generator.sample_EVERYTHING()
 
     for batch in gen_iter:
