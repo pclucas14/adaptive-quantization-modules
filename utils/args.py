@@ -66,6 +66,8 @@ def get_global_args(arglist):
             choices=['split_cifar10','split_cifar100','miniimagenet','kitti',
                 'kitti_img'],
             help='Dataset name')
+    add('--rl_env', type=str, default='pitfall',
+            choices=['pitfall', 'pong', 'mspacman'])
     add('--data_size', type=int, nargs='+', default=(3, 128, 128),
             help='height / width of the input. Note that only Imagenet'        +
             ' supports the use of this flag')
@@ -102,7 +104,7 @@ def get_global_args(arglist):
     add('--global_learning_rate', type=float, default=1e-4,
             help='learning rate used if `--optimization global`. The per layer'+
             'learning rates are unused in this setting')
-    add('--num_blocks', type=int, default=0,
+    add('--num_blocks', type=int, default=1,
             help='number of QLayers / modules / blocks  in QStack')
     add('--xyz', action='store_true',
             help='if True, xyz coordinates are used instead of polar. '        +
@@ -170,6 +172,9 @@ def get_global_args(arglist):
 
     add('--modular_input', type=str, default='z_q',
             choices=['z_q', 'z_e'])
+
+    add('--always_compress', type=int, default=0,
+            help='only set to true if you\'re ok with underuse of memory')
 
     args = parser.parse_args(arglist)
 

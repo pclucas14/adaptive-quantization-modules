@@ -219,13 +219,13 @@ class QLayer(nn.Module):
 
         z_q, diff, argmin, ppl = self.quantize(z_e)
 
-        # Used to be 75 --> now 90
+        # Used to be 75 --> now 90 --> now 95
         if self.avg_comp > .90 and not self.frozen_qt and self.args.freeze_embeddings:
             print('fixing Block %d' % self.id)
             self.quantize.decay = 1.
             self.frozen_qt = True
             self.init_ema()
-
+            kwargs['%d_frozen' % self.id] = True
 
 
         self.log.log('decay-%d' % self.id, self.quantize.decay, per_task=False)
@@ -269,7 +269,26 @@ class QLayer(nn.Module):
             # lidar so l1 loss
             recon = F.l1_loss(self.output, target)
         else:
-            recon = F.mse_loss(self.output, target)
+            recon = F.mse_loss(self.output, target, reduction='none')
+            if 'next_frame' in kwargs and self.id == 0:
+                next_frame = kwargs['next_frame']
+                inc_target, re_target = target[:next_frame.size(0)], target[next_frame.size(0):]
+
+                changed_a_lot = (next_frame - inc_target).abs() > 1e-5
+
+                # penalize things that change more
+                idx = slice(0, next_frame.size(0))
+
+                lam = .99
+
+                recon[idx] = recon[idx] * lam * changed_a_lot + recon[idx]* (1 - lam) * ~changed_a_lot
+
+                # check for NaNs
+                if (recon[idx] != recon[idx]).sum() > 0:
+                    import pdb; pdb.set_trace()
+                    xx = 1
+
+            recon = recon.mean()
 
         self.recon = recon.item()
         if not kwargs.get('no_log', False):
@@ -398,7 +417,7 @@ class QStack(nn.Module):
 
     def buffer_update_idx(self, re_x, re_y, re_t, re_ds_idx, re_step):
         # If more than 5% of memory is already free, ski this step
-        if float(self.mem_used) / self.mem_size < .95: # instead of 90
+        if float(self.mem_used) / self.mem_size < .95 and not self.args.always_compress: # instead of 90
             ratio = float(self.mem_used) / self.mem_size
             # print('currently at {:.4f}'.format(ratio))
             return
@@ -457,7 +476,7 @@ class QStack(nn.Module):
 
             for i, block in enumerate(self.blocks):
 
-                if not self.args.no_idx_update and False:
+                if not self.args.no_idx_update:
                     # 1) update stale representations
                     update_mask = (pre_block_id == (i+1)) * (new_block_id == (i+1))
                     update_idx  = self.sampled_indices[update_mask]
@@ -609,6 +628,9 @@ class QStack(nn.Module):
     def add_to_buffer(self, x, y, t, ds_idx, step=0, **kwargs):
         with torch.no_grad():
 
+            if x.size(0) == 0:
+                import pdb; pdb.set_trace()
+
             # first we add all incoming points
             target = self.all_levels_recon[:, :x.size(0)]
 
@@ -622,6 +644,10 @@ class QStack(nn.Module):
             recon_th  = self.recon_th.unsqueeze(1).expand_as(per_block_l2)
             block_id  = (per_block_l2 < recon_th)
             comp_rate = block_id.float().mean(dim=1).flip(0)
+
+            if comp_rate[comp_rate != comp_rate].sum() > 0:
+                import pdb; pdb.set_trace()
+                xx = 1
 
             if self.args.mask_unfrozen:
                 frozen = torch.Tensor([block.frozen_qt for block in self.blocks])
@@ -663,7 +689,10 @@ class QStack(nn.Module):
             should_free = self.mem_used - self.mem_size
 
             if should_free > 0:
+                # TODO: put this back!
                 steps = torch.cat([self.reg_buffer.bstep] + [x.buffer.bstep for x in self.blocks])
+
+                # steps = torch.cat([self.reg_buffer.by] + [x.buffer.by for x in self.blocks])
                 ids   = torch.cat([torch.LongTensor(x.n_samples).fill_(x.id) for x in self.blocks]).to(steps.device)
                 block_specific_idx = torch.cat([torch.arange(self.reg_buffer.n_samples)] + [torch.arange(x.n_samples) for x in self.blocks])
 
@@ -686,14 +715,19 @@ class QStack(nn.Module):
                 window = torch.cat((left, window, right))
 
                 delta = (sorted_steps.view(-1, 1) - window).float()
-                '''
-                WIDTH = 5
-                delta = (sorted_steps.view(-1, 1) - sorted_steps.view(1, -1)).float()
-                '''
                 kernel_input = (-delta ** 2 / (2*WIDTH**2)).exp().div_(WIDTH * np.sqrt(2 * np.pi))
+
                 kernel = kernel_input.mean(1)
 
-                kernel = F.softmax(kernel / 1e-4)
+                kernel = F.softmax(kernel / 1e-4, dim=-1)
+
+                # I commented it out for exact reproducibility of the Imagenet Exp, but
+                # ideally it should be there
+                # kernel.clamp_(min=1e-9)
+                # kernel = kernel / kernel.sum()
+
+                if (kernel != kernel).sum() > 0:
+                    import pdb; pdb.set_trace()
                 # kernel = kernel / kernel.sum()
 
                 # sample according to kernel
@@ -722,7 +756,15 @@ class QStack(nn.Module):
                     Image.open('tmpd.png').show()
                     import pdb; pdb.set_trace()
 
+                kernel_np = kernel.cpu().numpy()
+                if kernel[kernel != kernel].size(0) > 0:
+                    print('nans')
+                    import pdb; pdb.set_trace()
+                    xx = 1
+
+                # if this fails, it's because not enough categories have non zero prob
                 idx_sample = torch.multinomial(kernel, int(n_samples), replacement=False)
+
                 # idx_sample = kernel.topk(int(n_samples))[1]
                 id_sample  = sorted_ids[idx_sample]
 
@@ -1094,6 +1136,7 @@ class QStack(nn.Module):
                 name = 'Full_recon-B%d' % block.id
                 if kwargs.get('ema_decoder', False): name += '_ema'
                 # block.log.log(name, F.mse_loss(x, og))
+                block.log.log(name, F.mse_loss(x, og), per_task=True)
                 block.log.log(name, F.mse_loss(x, og), per_task=False)
 
             return out_levels

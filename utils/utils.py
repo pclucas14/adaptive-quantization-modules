@@ -19,6 +19,8 @@ import matplotlib.pyplot as plt
 # good'ol utils
 # ---------------------------------------------------------------------------------
 
+PRINT = ['recon', 'samples', 'decay', 'avg_l2', 'comp_rate', 'drift', 'capacity']
+
 class RALog():
     """ keeps track of running averages of values """
 
@@ -31,14 +33,17 @@ class RALog():
         self.per_task = OD()
 
     def one_liner(self):
+        # import pdb; pdb.set_trace()
         fill = lambda x, y : (x + ' ' * max(0, y - len(x)))[-y:]
         out = ''
         for key, value in self.storage.items():
-            out += fill(key, 20)
-            if type(value) == np.ndarray:
-                out += str(value)
-            else:
-                out += '{:.4f}\t'.format(value)
+            if sum([x in key for x in PRINT]) > 0:
+                out += fill(key, 20)
+                if type(value) == np.ndarray:
+                    out += str(value)
+                else:
+                    out += '{:.4f}\t'.format(value)
+
         return out
 
     def log(self, key, value, per_task=True):
@@ -57,6 +62,7 @@ class RALog():
             cnt  = self.count[key]
             self.storage[key] = (prev * cnt  + value) / (cnt + 1.)
             self.count[key] += 1
+
 
 def average_log(dic):
 
@@ -179,8 +185,10 @@ def load_model(model, path):
                 model.reg_buffer.expand(param.size(0))
             else:
                 parts = name.split('.')
-                block_id, buf_id = int(parts[1]), int(parts[3])
-                model.blocks[block_id].buffer[buf_id].expand(param.size(0))
+                block_id  = int(parts[1])
+                model.blocks[block_id].buffer.expand(param.size(0))
+
+    xx = 1
 
     model.load_state_dict(params)
 
