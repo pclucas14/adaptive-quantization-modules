@@ -39,8 +39,8 @@ if args.gen_weights:
 
     # load data
     ((tr_episodes,   tr_labels,   tr_ids),
-    (val_episodes,  val_labels,  val_ids),
-    (test_episodes, test_labels, test_ids)) = \
+     (val_episodes,  val_labels,  val_ids),
+     (test_episodes, test_labels, test_ids)) = \
         pkl.load(open(os.path.join(args.log_dir, 'all_data.pkl'), 'rb'))
 
     all_episodes = tr_episodes + val_episodes + test_episodes
@@ -78,7 +78,7 @@ else:
     tr_episodes, val_episodes,\
     tr_labels, val_labels,\
     test_episodes, test_labels = get_episodes(env_name=env_name,
-                                         steps=5000,
+                                         steps=20000, #40000,
                                          collect_mode="random_agent",
                                          color=True)
 
@@ -197,11 +197,11 @@ else:
 
 
 """ If you want to sample from the model """
-new_tr_episodes,   new_tr_labels   = [], []
-new_val_episodes,  new_val_labels  = [], []
-new_test_episodes, new_test_labels = [], []
+new_tr_episodes,   new_tr_labels  , new_tr_ids   = [], [], []
+new_val_episodes,  new_val_labels , new_val_ids  = [], [], []
+new_test_episodes, new_test_labels, new_test_ids = [], [], []
 
-if True:
+with torch.no_grad():
     # then sample from it
     gen_iter = generator.sample_EVERYTHING()
 
@@ -215,13 +215,22 @@ if True:
         all_xs_flat     += item_a
         all_labels_flat += item_b
 
+    count = 0
+
+    all_ = []
     for batch in gen_iter:
 
-        x, y, _, task, og_id, block_id = batch
+        x, _, _, _, og_id, _ = batch
+
+        all_ += [x]
 
         x = x.cpu()
+        og_id = og_id.cpu()
 
         for i in range(x.size(0)):
+            count += 1
+            print('%d / %d' % (count, x.size(0)))
+
             sample       = x[i]
             sample_id    = og_id[i]
             sample_label = all_labels_flat[sample_id]
@@ -231,22 +240,52 @@ if True:
             if sample_id < id_train:
                 new_tr_episodes   += [sample]
                 new_tr_labels     += [sample_label]
+                new_tr_ids        += [sample_id]
             elif id_train <= sample_id < id_val:
                 new_val_episodes  += [sample]
                 new_val_labels    += [sample_label]
+                new_val_ids       += [sample_id]
             else:
                 new_test_episodes += [sample]
                 new_test_labels   += [sample_label]
+                new_test_ids      += [sample_id]
 
 
-import pdb; pdb.set_trace()
-""" IMPORTANT NOTE """
-# this is for train valid and test,
+    sort_fn = lambda x: sorted(x, key=lambda v: v[0])
 
-# tr_episodes is an array of arrays containing (3, 210, 160) tensors
-# whereas new_tr_episodes is an array containines (3, 210, 160)
-# you have that len(new_tr_episodes) == (ish) to sum([len(x) for x in tr_episodes])
-# the `ish` is because we lose the last frame of every episode during encoding. see line 139
+tr    = sort_fn(zip(new_tr_ids, new_tr_labels, new_tr_episodes))
+val   = sort_fn(zip(new_val_ids, new_val_labels, new_val_episodes))
+test  = sort_fn(zip(new_test_ids, new_test_labels, new_test_episodes))
 
+new_tr_ids, new_tr_labels, new_tr_episodes          = [x[0] for x in tr],   [x[1] for x in tr],   [x[2] for x in tr]
+new_val_ids, new_val_labels, new_val_episodes       = [x[0] for x in val],  [x[1] for x in val],  [x[2] for x in val]
+new_test_ids, new_test_labels, new_test_episodes    = [x[0] for x in test], [x[1] for x in test], [x[2] for x in test]
 
+# split the same way as the test set:
+def split(labels, eps, ref):
+    out_ep, out_label = [], []
+    for ref_ep in ref:
+
+        # -1 because of hte next frame being removed. see line 139
+        last_idx = len(ref_ep) - 1
+        out_ep    += [eps[:last_idx]]
+        out_label += [labels[:last_idx]]
+
+        eps = eps[last_idx:]
+        labels = labels[last_idx:]
+
+    return out_ep, out_label
+
+sqm_tr_ep,   sqm_tr_label   = split(new_tr_labels,   new_tr_episodes,   tr_episodes)
+sqm_val_ep,  sqm_val_label  = split(new_val_labels,  new_val_episodes,  val_episodes)
+sqm_test_ep, sqm_test_label = split(new_test_labels, new_test_episodes, test_episodes)
+
+# FINALLY, store everything to file
+all_of_it = ((sqm_tr_ep, sqm_tr_label, None),
+             (sqm_val_ep, sqm_val_label, None),
+             (sqm_test_ep, sqm_test_label, None))
+
+print('saving data')
+pkl.dump(all_of_it, open(os.path.join(args.log_dir, 'sqm_data.pkl'), 'wb'))
+print('done saving data')
 
