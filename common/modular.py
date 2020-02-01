@@ -283,11 +283,6 @@ class QLayer(nn.Module):
 
                 recon[idx] = recon[idx] * lam * changed_a_lot + recon[idx]* (1 - lam) * ~changed_a_lot
 
-                # check for NaNs
-                if (recon[idx] != recon[idx]).sum() > 0:
-                    import pdb; pdb.set_trace()
-                    xx = 1
-
             recon = recon.mean()
 
         self.recon = recon.item()
@@ -628,9 +623,6 @@ class QStack(nn.Module):
     def add_to_buffer(self, x, y, t, ds_idx, step=0, **kwargs):
         with torch.no_grad():
 
-            if x.size(0) == 0:
-                import pdb; pdb.set_trace()
-
             # first we add all incoming points
             target = self.all_levels_recon[:, :x.size(0)]
 
@@ -644,10 +636,6 @@ class QStack(nn.Module):
             recon_th  = self.recon_th.unsqueeze(1).expand_as(per_block_l2)
             block_id  = (per_block_l2 < recon_th)
             comp_rate = block_id.float().mean(dim=1).flip(0)
-
-            if comp_rate[comp_rate != comp_rate].sum() > 0:
-                import pdb; pdb.set_trace()
-                xx = 1
 
             if self.args.mask_unfrozen:
                 frozen = torch.Tensor([block.frozen_qt for block in self.blocks])
