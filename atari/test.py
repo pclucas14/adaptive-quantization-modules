@@ -212,7 +212,7 @@ with torch.no_grad():
     for batch in gen_iter:
 
         x, _, _, _, og_id, _ = batch
-
+        x=x.cpu()
         all_ += [x]
 
         x = x.cpu()
