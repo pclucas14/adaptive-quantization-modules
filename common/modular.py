@@ -100,7 +100,7 @@ class QLayer(nn.Module):
         if idx is None:
             idx = torch.ones_like(y).bool()
 
-        assert 'bool' in idx.type().lower()
+#        assert 'bool' in idx.type().lower()
 
         #NOTE: we have : data_x  = torch.cat((input_x, re_x))
         argmins = argmins[:y.size(0)]
@@ -281,7 +281,7 @@ class QLayer(nn.Module):
 
                 lam = .99
 
-                recon[idx] = recon[idx] * lam * changed_a_lot + recon[idx]* (1 - lam) * ~changed_a_lot
+                recon[idx] = recon[idx] * lam * changed_a_lot.float() + recon[idx]* (1 - lam) * (1.-changed_a_lot.float())
 
                 # check for NaNs
                 if (recon[idx] != recon[idx]).sum() > 0:
