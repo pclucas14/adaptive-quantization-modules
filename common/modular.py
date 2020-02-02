@@ -410,7 +410,7 @@ class QStack(nn.Module):
                     print('new lr {:.6f}, decay {:.4f}'.format(param_group['lr'], block.args.decay))
 
 
-    def buffer_update_idx(self, re_x, re_y, re_t, re_ds_idx, re_step):
+    def buffer_update_idx(self, re_x, re_y, re_t, re_ds_idx, re_step, **kwargs):
         # If more than 5% of memory is already free, ski this step
         if float(self.mem_used) / self.mem_size < .95 and not self.args.always_compress: # instead of 90
             ratio = float(self.mem_used) / self.mem_size
@@ -490,6 +490,17 @@ class QStack(nn.Module):
                     # 3) add new representations
                     add_mask    = (pre_block_id < (i+1))  * (new_block_id == (i+1))
                     block.add_argmins(re_y[add_mask], re_t[add_mask], re_ds_idx[add_mask], re_step[add_mask], argmin_idx=add_mask, last_n=re_x.size(0))
+
+                    if kwargs.get('cpu_buffer', False):
+                        cpu_buffer = kwargs['cpu_buffer']
+                        cpu_buffer.blocks[i].argmins = block.argmins.cpu()
+                        cpu_buffer.blocks[i].add_argmins(re_y[add_mask].cpu(),
+                                                         re_t[add_mask].cpu(),
+                                                         re_ds_idx[add_mask].cpu(),
+                                                         re_step[add_mask].cpu(),
+                                                         argmin_idx=add_mask.cpu(),
+                                                         last_n=re_x.size(0))
+
 
             # will need to recompute statistics
             self.up_to_date(False)
@@ -666,6 +677,10 @@ class QStack(nn.Module):
                 # add new points
                 # block.add_to_buffer(block.argmins, y, t, ds_idx, idx=(block_id == (i+1)), step=step)
                 block.add_to_buffer(block.argmins, y, t, ds_idx, idx=(block_id == i), step=step)
+
+                if kwargs.get('cpu_buffer', False):
+                    cpu_buffer = kwargs['cpu_buffer']
+                    cpu_buffer.blocks[i].add_to_buffer(block.argmins.cpu(), y.cpu(), t, ds_idx.cpu(), idx=(block_id == i).cpu(), step=step)
 
                 # log
                 block.avg_comp = block.avg_comp * 0.99 + .01 * comp_rate[i].item()

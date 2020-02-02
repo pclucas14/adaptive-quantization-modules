@@ -30,7 +30,8 @@ np.set_printoptions(threshold=3)
 
 args = get_args()
 rescale_inv = (lambda x : x * 0.5 + 0.5)
-save_data = True
+save_data = not args.debug
+mem_size  = args.mem_size
 
 """ generating data and training model """
 
@@ -48,7 +49,9 @@ maybe_create_dir(sample_dir)
 assert tuple(args.data_size[-2:]) == (210, 160)
 
 # fetch model and ship to GPU
-generator  = QStack(args).to(args.device)
+cpu_gen       = QStack(args)
+args.mem_size = 1000
+generator     = QStack(args).to(args.device)
 
 env_name = {'pitfall':"PitfallNoFrameskip-v4",
             'pong':"PongNoFrameskip-v4",
@@ -57,9 +60,9 @@ env_name = {'pitfall':"PitfallNoFrameskip-v4",
 tr_episodes, val_episodes,\
 tr_labels, val_labels,\
 test_episodes, test_labels = get_episodes(env_name=env_name,
-                                     steps=25000,
+                                     steps=mem_size,
                                      collect_mode="random_agent",
-                                     color=True)
+                                     color=args.data_size[0] == 3)
 
 
 # assign unide id to every frame
@@ -109,10 +112,7 @@ all_labels   = tr_labels   + val_labels   + test_labels
 all_ids      = tr_ids      + val_ids      + test_ids
 
 
-kwargs = {'all_levels_recon':True}
-if args.optimization == 'global':
-    # flow gradient through blocks when doing global optimization
-    kwargs.update({'inter_level_gradient':True})
+kwargs = {'all_levels_recon':True, 'cpu_buffer':cpu_gen}
 
 step = 0
 for task, (episode, episode_label)  in enumerate(zip(all_episodes, all_ids)):
@@ -124,7 +124,7 @@ for task, (episode, episode_label)  in enumerate(zip(all_episodes, all_ids)):
     episode_label = torch.from_numpy(np.array(episode_label)).long().to(args.device)
 
     # episode is [0, 255].
-    episode = (episode.float() / 255.) - .5
+    episode = (episode.float() / 255. - .5 ) * 2
 
     next_frame    = episode[1:]
     episode       = episode[:-1]
@@ -160,11 +160,11 @@ for task, (episode, episode_label)  in enumerate(zip(all_episodes, all_ids)):
 
             if task > 0 and args.rehearsal:
                 # potentially update the indices of `re_x`, or even it's compression level
-                generator.buffer_update_idx(re_x, re_y, re_t, re_idx, re_step)
+                generator.buffer_update_idx(re_x, re_y, re_t, re_idx, re_step, **kwargs)
 
             if args.rehearsal and n_iter == 0:
                 # generator.add_reservoir(input_x, input_y, task, idx_, step=step)
-                generator.add_to_buffer(input_x, input_y, task, idx_, step=step)
+                generator.add_to_buffer(input_x, input_y, task, idx_, step=step, **kwargs)
 
         # set the gen. weights used for sampling == current generator weights
         generator.update_ema_decoder()
@@ -191,6 +191,18 @@ if not args.debug:
 new_tr_episodes,   new_tr_labels  , new_tr_ids   = [], [], []
 new_val_episodes,  new_val_labels , new_val_ids  = [], [], []
 new_test_episodes, new_test_labels, new_test_ids = [], [], []
+
+
+generator = generator.cpu()
+
+
+import pdb; pdb.set_trace()
+
+# transfer to new gen
+for (cpu_block, gpu_block) in zip(cpu_gen.blocks, generator.blocks):
+    gpu_block.bufffer = cpu_block.buffer
+
+import pdb; pdb.set_trace()
 
 with torch.no_grad():
     # then sample from it
@@ -271,21 +283,22 @@ sqm_tr_ep,   sqm_tr_label   = split(new_tr_labels,   new_tr_episodes,   tr_episo
 sqm_val_ep,  sqm_val_label  = split(new_val_labels,  new_val_episodes,  val_episodes)
 sqm_test_ep, sqm_test_label = split(new_test_labels, new_test_episodes, test_episodes)
 
-out_tr_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_tr_ep])) * 255.).byte()
-out_tr_len = [len(x) for x in sqm_tr_ep]
-torch.save(out_tr_ep, os.path.join(args.log_dir, 'sqm_tr_data.pth'))
-np.savetxt(os.path.join(args.log_dir, 'sqm_tr_lens.txt'), out_tr_len)
-pkl.dump(sqm_tr_label, open(os.path.join(args.log_dir, 'sqm_tr_labels.pkl'), 'wb'))
+if not args.debug:
+    out_tr_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_tr_ep])) * 255.).byte()
+    out_tr_len = [len(x) for x in sqm_tr_ep]
+    torch.save(out_tr_ep, os.path.join(args.log_dir, 'sqm_tr_data.pth'))
+    np.savetxt(os.path.join(args.log_dir, 'sqm_tr_lens.txt'), out_tr_len)
+    pkl.dump(sqm_tr_label, open(os.path.join(args.log_dir, 'sqm_tr_labels.pkl'), 'wb'))
 
-out_val_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_val_ep])) * 255.).byte()
-out_val_len = [len(x) for x in sqm_val_ep]
-torch.save(out_val_ep, os.path.join(args.log_dir, 'sqm_val_data.pth'))
-np.savetxt(os.path.join(args.log_dir, 'sqm_val_lens.txt'), out_val_len)
-pkl.dump(sqm_val_label, open(os.path.join(args.log_dir, 'sqm_val_labels.pkl'), 'wb'))
+    out_val_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_val_ep])) * 255.).byte()
+    out_val_len = [len(x) for x in sqm_val_ep]
+    torch.save(out_val_ep, os.path.join(args.log_dir, 'sqm_val_data.pth'))
+    np.savetxt(os.path.join(args.log_dir, 'sqm_val_lens.txt'), out_val_len)
+    pkl.dump(sqm_val_label, open(os.path.join(args.log_dir, 'sqm_val_labels.pkl'), 'wb'))
 
-out_test_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_test_ep])) * 255.).byte()
-out_test_len = [len(x) for x in sqm_test_ep]
-torch.save(out_test_ep, os.path.join(args.log_dir, 'sqm_test_data.pth'))
-np.savetxt(os.path.join(args.log_dir, 'sqm_test_lens.txt'), out_test_len)
-pkl.dump(sqm_test_label, open(os.path.join(args.log_dir, 'sqm_test_labels.pkl'), 'wb'))
+    out_test_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_test_ep])) * 255.).byte()
+    out_test_len = [len(x) for x in sqm_test_ep]
+    torch.save(out_test_ep, os.path.join(args.log_dir, 'sqm_test_data.pth'))
+    np.savetxt(os.path.join(args.log_dir, 'sqm_test_lens.txt'), out_test_len)
+    pkl.dump(sqm_test_label, open(os.path.join(args.log_dir, 'sqm_test_labels.pkl'), 'wb'))
 
