@@ -193,16 +193,12 @@ new_val_episodes,  new_val_labels , new_val_ids  = [], [], []
 new_test_episodes, new_test_labels, new_test_ids = [], [], []
 
 
+""" Transfer to cpu """
 generator = generator.cpu()
 
-
-import pdb; pdb.set_trace()
-
-# transfer to new gen
 for (cpu_block, gpu_block) in zip(cpu_gen.blocks, generator.blocks):
     gpu_block.bufffer = cpu_block.buffer
 
-import pdb; pdb.set_trace()
 
 with torch.no_grad():
     # then sample from it
