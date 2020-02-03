@@ -66,8 +66,6 @@ def get_global_args(arglist):
             choices=['split_cifar10','split_cifar100','miniimagenet','kitti',
                 'kitti_img'],
             help='Dataset name')
-    add('--rl_env', type=str, default='pitfall',
-            choices=['pitfall', 'pong', 'mspacman'])
     add('--data_size', type=int, nargs='+', default=(3, 128, 128),
             help='height / width of the input. Note that only Imagenet'        +
             ' supports the use of this flag')
@@ -94,6 +92,10 @@ def get_global_args(arglist):
     add('--multiple_heads', type=int, default=-1,
             help='Use `1` for multi-head experiments and `0` for single head. '+
             'Will only be used if `--override_cl_defaults`')
+
+    # Atari
+    add('--rl_env', type=str, default='pitfall',
+            choices=['pitfall', 'pong', 'mspacman'])
 
     # new ones
     add('--optimization', type=str, default='blockwise',

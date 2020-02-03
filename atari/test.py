@@ -174,7 +174,7 @@ for task, (episode, episode_label)  in enumerate(zip(all_episodes, all_ids)):
     generator.log(task, writer=writer, mode='train', should_print=args.print_logs)
 
 
-    if args.rehearsal:
+    if args.rehearsal and not args.debug:
         buffer_sample, by, bt, _, _ = generator.sample_from_buffer(64)
         # save_image(rescale_inv(buffer_sample), '../samples/buf_%s_%d.png' % (args.model_name, task), nrow=8)
         save_image(rescale_inv(buffer_sample), '../samples/buf_%s_%d.png' % (args.rl_env, task), nrow=8)
@@ -195,10 +195,13 @@ new_test_episodes, new_test_labels, new_test_ids = [], [], []
 
 """ Transfer to cpu """
 generator = generator.cpu()
-
+print(generator.blocks[0].n_samples)
 for (cpu_block, gpu_block) in zip(cpu_gen.blocks, generator.blocks):
-    gpu_block.bufffer = cpu_block.buffer
+    print(gpu_block.n_samples)
+    gpu_block.buffer = cpu_block.buffer
+    print(gpu_block.n_samples)
 
+print(generator.blocks[0].n_samples)
 
 with torch.no_grad():
     # then sample from it
@@ -278,6 +281,7 @@ def split(labels, eps, ref):
 sqm_tr_ep,   sqm_tr_label   = split(new_tr_labels,   new_tr_episodes,   tr_episodes)
 sqm_val_ep,  sqm_val_label  = split(new_val_labels,  new_val_episodes,  val_episodes)
 sqm_test_ep, sqm_test_label = split(new_test_labels, new_test_episodes, test_episodes)
+
 
 if not args.debug:
     out_tr_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_tr_ep])) * 255.).byte()
