@@ -171,7 +171,7 @@ class QLayer(nn.Module):
         buffer.update(buffer_idx, argmin)
 
 
-    def sample_from_buffer(self, n_samples, from_comp=False):
+    def sample_from_buffer(self, n_samples):
         """ only adding this header cuz all other methods have one """
 
         with torch.no_grad():
@@ -191,7 +191,7 @@ class QLayer(nn.Module):
                     buffer.bidx[idx], buffer.bx[idx], buffer.bstep[idx]
 
 
-    def sample_EVERYTHING(self):
+    def sample_EVERYTHING(self, **kwargs):
         """ only adding this header cuz all other methods have one """
 
         BS = 32
@@ -205,8 +205,15 @@ class QLayer(nn.Module):
                 idx = range(batch * BS, min(self.n_samples, (batch+1) * BS))
                 qt, buffer  = self.old_quantize, self.buffer
 
-                yield qt.idx_2_hid(buffer.bx[idx]), buffer.by[idx], buffer.bx[idx], \
-                buffer.bt[idx], buffer.bidx[idx]
+                to_be_returned = [buffer.by[idx], buffer.bx[idx], buffer.bt[idx], buffer.bidx[idx]]
+
+                if kwargs.get('device', False):
+                    dev = kwargs['device']
+                    to_be_returned = [item.to(dev) for item in to_be_returned]
+
+                to_be_returned = [qt.idx_2_hid(to_be_returned[1])] + to_be_returned
+
+                yield to_be_returned
 
 
     def up(self, x, **kwargs):
@@ -595,7 +602,7 @@ class QStack(nn.Module):
             return torch.cat((reg_x, out_x)), torch.cat((reg_y, out_y)), torch.cat((reg_t, out_t)), torch.cat((reg_ds_idx, out_idx)), torch.cat((reg_step, out_step))
 
 
-    def sample_EVERYTHING(self):
+    def sample_EVERYTHING(self, **kwargs):
         """ something something something """
         with torch.no_grad():
 
@@ -617,7 +624,7 @@ class QStack(nn.Module):
             for block in r_blocks:
 
                 try:
-                    gen_iter = block.sample_EVERYTHING()
+                    gen_iter = block.sample_EVERYTHING(**kwargs)
                     while True:
                         xx, yy, argmin, tt, ds_idx  = next(gen_iter)
 
@@ -736,11 +743,12 @@ class QStack(nn.Module):
                 # sample according to kernel
                 best_block_used = ids.max()
                 if best_block_used == -1:
-                    n_samples = np.ceil(should_free / self.reg_buffer.mem_per_sample)
+                    n_samples = min(np.ceil(should_free / self.reg_buffer.mem_per_sample), self.reg_buffer.n_samples)
                 else:
-                    n_samples = np.ceil(should_free / self.blocks[best_block_used].mem_per_sample)
+                    n_samples = min(np.ceil(should_free / self.blocks[best_block_used].mem_per_sample), max([x.n_samples for x in self.blocks]))
 
-                assert kernel.size(0) > n_samples
+                import pdb
+                assert kernel.size(0) > n_samples, pdb.set_trace()
 
                 if self.n_seen_so_far > 2000 and False:
                     import matplotlib.pyplot as plt
@@ -783,7 +791,7 @@ class QStack(nn.Module):
                 to_be_sampled     = ((prob_per_block * should_free)  / self.mem_per_block).ceil().long()
 
                 # remove uncompressed
-                if to_be_sampled[0] > 0:
+                if to_be_sampled[0] > 0 and not self.args.rl:
                     valid_idx = idx_sample[id_sample == -1]
                     drawn_idx = valid_idx[torch.randperm(valid_idx.size(0))[:to_be_sampled[0]]]
                     drawn_idx = block_specific_idx[drawn_idx]
@@ -802,7 +810,7 @@ class QStack(nn.Module):
             """ Making sure everything is behaving as expected """
 
             import pdb
-            assert self.mem_size >= self.mem_used, pdb.set_trace()
+            assert self.mem_size >= self.mem_used or self.args.rl, pdb.set_trace()
 
             # update statistic
             self.n_seen_so_far += x.size(0)
@@ -813,9 +821,6 @@ class QStack(nn.Module):
             block.log.log('buffer_samples-reg', self.reg_stored, per_task=False)
             block.log.log('buffer-mem', self.mem_used, per_task=False)
             block.log.log('n_seen_so_far', self.n_seen_so_far, per_task=False)
-
-
-
 
 
     def add_reservoir(self, x, y, t, ds_idx, step=0, **kwargs):

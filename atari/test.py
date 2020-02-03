@@ -194,7 +194,7 @@ new_test_episodes, new_test_labels, new_test_ids = [], [], []
 
 
 """ Transfer to cpu """
-generator = generator.cpu()
+# generator = generator.cpu()
 print(generator.blocks[0].n_samples)
 for (cpu_block, gpu_block) in zip(cpu_gen.blocks, generator.blocks):
     print(gpu_block.n_samples)
@@ -205,7 +205,8 @@ print(generator.blocks[0].n_samples)
 
 with torch.no_grad():
     # then sample from it
-    gen_iter = generator.sample_EVERYTHING()
+    kwargs = {'device':'cuda:0'}
+    gen_iter = generator.sample_EVERYTHING(**kwargs)
 
     # flatten labels
     all_labels_flat = []
@@ -223,10 +224,9 @@ with torch.no_grad():
     for batch in gen_iter:
 
         x, _, _, _, og_id, _ = batch
-        x=x.cpu()
+        x = x.cpu()
         all_ += [x]
 
-        x = x.cpu()
         og_id = og_id.cpu()
 
         for i in range(x.size(0)):
@@ -284,19 +284,19 @@ sqm_test_ep, sqm_test_label = split(new_test_labels, new_test_episodes, test_epi
 
 
 if not args.debug:
-    out_tr_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_tr_ep])) * 255.).byte()
+    out_tr_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_tr_ep]).clamp_(-1, 1)) * 255.).byte()
     out_tr_len = [len(x) for x in sqm_tr_ep]
     torch.save(out_tr_ep, os.path.join(args.log_dir, 'sqm_tr_data.pth'))
     np.savetxt(os.path.join(args.log_dir, 'sqm_tr_lens.txt'), out_tr_len)
     pkl.dump(sqm_tr_label, open(os.path.join(args.log_dir, 'sqm_tr_labels.pkl'), 'wb'))
 
-    out_val_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_val_ep])) * 255.).byte()
+    out_val_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_val_ep]).clamp_(-1, 1)) * 255.).byte()
     out_val_len = [len(x) for x in sqm_val_ep]
     torch.save(out_val_ep, os.path.join(args.log_dir, 'sqm_val_data.pth'))
     np.savetxt(os.path.join(args.log_dir, 'sqm_val_lens.txt'), out_val_len)
     pkl.dump(sqm_val_label, open(os.path.join(args.log_dir, 'sqm_val_labels.pkl'), 'wb'))
 
-    out_test_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_test_ep])) * 255.).byte()
+    out_test_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_test_ep]).clamp_(-1, 1)) * 255.).byte()
     out_test_len = [len(x) for x in sqm_test_ep]
     torch.save(out_test_ep, os.path.join(args.log_dir, 'sqm_test_data.pth'))
     np.savetxt(os.path.join(args.log_dir, 'sqm_test_lens.txt'), out_test_len)

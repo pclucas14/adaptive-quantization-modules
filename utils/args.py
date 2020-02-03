@@ -96,6 +96,8 @@ def get_global_args(arglist):
     # Atari
     add('--rl_env', type=str, default='pitfall',
             choices=['pitfall', 'pong', 'mspacman'])
+    add('--rl', action='store_true')
+
 
     # new ones
     add('--optimization', type=str, default='blockwise',
