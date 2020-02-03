@@ -57,7 +57,7 @@ env_name = {'pitfall':"PitfallNoFrameskip-v4",
 tr_episodes, val_episodes,\
 tr_labels, val_labels,\
 test_episodes, test_labels = get_episodes(env_name=env_name,
-                                     steps=25000,
+                                     steps=args.mem_size,
                                      collect_mode="random_agent",
                                      color=True)
 
@@ -124,7 +124,7 @@ for task, (episode, episode_label)  in enumerate(zip(all_episodes, all_ids)):
     episode_label = torch.from_numpy(np.array(episode_label)).long().to(args.device)
 
     # episode is [0, 255].
-    episode = (episode.float() / 255.) - .5
+    episode = ((episode.float() / 255.) - .5)*2.0
 
     next_frame    = episode[1:]
     episode       = episode[:-1]
@@ -271,19 +271,21 @@ sqm_tr_ep,   sqm_tr_label   = split(new_tr_labels,   new_tr_episodes,   tr_episo
 sqm_val_ep,  sqm_val_label  = split(new_val_labels,  new_val_episodes,  val_episodes)
 sqm_test_ep, sqm_test_label = split(new_test_labels, new_test_episodes, test_episodes)
 
-out_tr_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_tr_ep])) * 255.).byte()
+out_tr_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_tr_ep])) * 255.).clamp(0,255).round().byte()
 out_tr_len = [len(x) for x in sqm_tr_ep]
 torch.save(out_tr_ep, os.path.join(args.log_dir, 'sqm_tr_data.pth'))
 np.savetxt(os.path.join(args.log_dir, 'sqm_tr_lens.txt'), out_tr_len)
 pkl.dump(sqm_tr_label, open(os.path.join(args.log_dir, 'sqm_tr_labels.pkl'), 'wb'))
 
-out_val_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_val_ep])) * 255.).byte()
+
+
+out_val_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_val_ep])) * 255.).clamp(0,255).round().byte()
 out_val_len = [len(x) for x in sqm_val_ep]
 torch.save(out_val_ep, os.path.join(args.log_dir, 'sqm_val_data.pth'))
 np.savetxt(os.path.join(args.log_dir, 'sqm_val_lens.txt'), out_val_len)
 pkl.dump(sqm_val_label, open(os.path.join(args.log_dir, 'sqm_val_labels.pkl'), 'wb'))
 
-out_test_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_test_ep])) * 255.).byte()
+out_test_ep  = (rescale_inv(torch.cat([torch.cat(x) for x in sqm_test_ep])) * 255.).clamp(0,255).round().byte()
 out_test_len = [len(x) for x in sqm_test_ep]
 torch.save(out_test_ep, os.path.join(args.log_dir, 'sqm_test_data.pth'))
 np.savetxt(os.path.join(args.log_dir, 'sqm_test_lens.txt'), out_test_len)
