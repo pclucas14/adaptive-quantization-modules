@@ -6,6 +6,31 @@ import os
 # -------------------------------------------------------------------------
 # Handy Utilities
 # -------------------------------------------------------------------------
+def to_polar(velo):
+    if len(velo.shape) == 4:
+        velo = velo.permute(1, 2, 3, 0)
+
+    if velo.shape[2] > 4:
+        assert velo.shape[0] <= 4
+        velo = velo.permute(1, 2, 0, 3)
+        switch=True
+    else:
+        switch=False
+
+    # assumes r x n/r x (3,4) velo
+    dist = torch.sqrt(velo[:, :, 0] ** 2 + velo[:, :, 1] ** 2)
+    # theta = np.arctan2(velo[:, 1], velo[:, 0])
+    out = torch.stack([dist, velo[:, :, 2]], dim=2)
+
+    if switch:
+        out = out.permute(2, 0, 1, 3)
+
+    if len(velo.shape) == 4:
+        out = out.permute(3, 0, 1, 2)
+
+    return out
+
+
 def to_polar_np(velo):
     if len(velo.shape) == 4:
         velo = velo.transpose(1, 2, 3, 0)
@@ -144,7 +169,7 @@ def postprocess(point):
     min_b, max_b = -25.833599090576172, 30.474000930786133
     min_c, max_c = -2.3989999294281006, 0.7383332848548889
 
-def preprocess(dataset):
+def preprocess(dataset, normalize=True):
     # remove outliers
     #min_a, max_a = np.percentile(dataset[:, :, :, [0]], 1), np.percentile(dataset[:, :, :, [0]], 99)
     #min_b, max_b = np.percentile(dataset[:, :, :, [1]], 1), np.percentile(dataset[:, :, :, [1]], 99)
@@ -164,7 +189,12 @@ def preprocess(dataset):
 
     dataset = dataset * (1 - np.expand_dims(mask, -1))
     #print(np.absolute(dataset).max())
-    dataset /= np.absolute(dataset).max()
+
+    all_max = np.absolute(dataset).max()
+
+    if normalize:
+        # TODO: put this back!
+        dataset /= all_max
 
     dataset = to_polar_np(dataset).transpose(0, 3, 1, 2)
     previous = (dataset[:, 0] == 0).sum()
@@ -318,7 +348,7 @@ def get_chamfer_dist(get_slow=False):
             b = a.transpose(-2, -1).contiguous()
 
         dist_a, dist_b = dist(a, b)
-        return dist_a.sum(dim=-1) + dist_b.sum(dim=-1)
+        return dist_a, dist_b
 
     return loss
 
