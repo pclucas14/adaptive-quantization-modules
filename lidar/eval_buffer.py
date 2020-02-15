@@ -52,6 +52,7 @@ args.normalize = False
 # make dataloaders
 data = locate('utils.data.get_%s' % args.dataset)(args)
 train_loader = CLDataLoader(data[0], args, train=True)
+print('loaded data')
 
 with torch.no_grad():
 
@@ -107,6 +108,7 @@ with torch.no_grad():
 
         dist_a, dist_b, _, _ = chamfer(prepro(raw_x_t) * scaling.view(-1, 1, 1), prepro(target))
         snnrmse = (.5 * dist_a.mean(-1) + .5 * dist_b.mean(-1)).sqrt().mean()
+        print(snnrmse)
 
         dists_a += [dist_a.mean()]
         dists_b += [dist_b.mean()]

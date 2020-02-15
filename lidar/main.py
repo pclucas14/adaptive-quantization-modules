@@ -9,6 +9,9 @@ from torchvision.utils import save_image
 from tensorboardX import SummaryWriter
 
 sys.path.append('../')
+sys.path.append('../../chamferdist')
+from chamferdist import ChamferDistance
+
 from utils.data   import *
 from utils.buffer import *
 from utils.utils  import *
@@ -19,17 +22,24 @@ from utils.kitti_utils import show_pc, from_polar
 from common.modular import QStack
 
 args = get_args()
-args.normalize = True
+args.normalize = False # True
 print(args)
 
 # functions
+chamfer_raw = ChamferDistance()
 Mean = lambda x : sum(x) / len(x)
 rescale_inv = (lambda x : x * 0.5 + 0.5)
+prepro = lambda x : x.reshape(x.size(0), 3, -1).transpose(-2, -1)
+chamfer = lambda x, y : chamfer_raw(prepro(from_polar(x)), prepro(from_polar(y)))[:2]
 
 # spawn writer
-args.log_dir = join('new_wave', args.model_name)
+args.log_dir = 'test' if args.debug else join('icml_appendix2', args.model_name)
 sample_dir   = join(args.log_dir, 'samples')
 writer       = SummaryWriter(log_dir=args.log_dir)
+
+def dump(lidar, nn='tmp'):
+    np.save(open('../lidars/%s' % nn, 'wb'),
+        lidar.cpu().data.numpy(), allow_pickle=False)
 
 print(args)
 best_test = float('inf')
@@ -56,7 +66,19 @@ def eval(name, max_task=-1, break_after=-1):
                 data, target = data.to(args.device), target.to(args.device)
                 if i_ > break_after > 0: break
 
+                # normalize point cloud
+                max_ = data.reshape(data.size(0), -1).abs().max(dim=1)[0].view(-1, 1, 1, 1)
+                data = data / max_
+
+                # block_n, block_n-1, ..., block_0
                 outs  = generator.reconstruct_all_levels(data)
+
+                for i, out in enumerate(outs):
+                    block_id = len(generator.blocks) - i
+                    dist_a, dist_b  = chamfer(data * max_, out * max_)
+                    snnrmse = (.5 * dist_a.mean(-1) + .5 * dist_b.mean(-1)).sqrt().mean()
+
+                    generator.blocks[0].log.log('snnrmse_%d' % block_id, snnrmse, per_task=False)
 
             generator.log(task_t, writer=writer, should_print=True, mode=name)
 
@@ -67,16 +89,9 @@ def eval(name, max_task=-1, break_after=-1):
             all_samples = all_samples.contiguous()      # bs, L, 3, 32, 32
             all_samples = all_samples.view(-1, *data.shape[-3:])
 
-            if 'kitti' in args.dataset:
-                # save lidar to samples
-                all_samples = (all_samples if args.xyz else from_polar(all_samples))[:12]
-                np.save(open('../lidars/{}_test{}_{}'.format(args.model_name, task_t, max_task), 'wb'),
-                        all_samples.cpu().data.numpy(), allow_pickle=False)
-
-            else:
-                save_image(rescale_inv(all_samples).view(-1, *args.input_size), \
-                    '../samples/{}_test_{}_{}.png'.format(args.model_name, task_t, max_task))
-
+            all_samples = (all_samples if args.xyz else from_polar(all_samples))[:12]
+            np.save(open('../lidars/{}_test{}_{}'.format(args.model_name, task_t, max_task), 'wb'),
+                    all_samples.cpu().data.numpy(), allow_pickle=False)
 
 def eval_drift(max_task=-1):
     with torch.no_grad():
@@ -90,35 +105,36 @@ def eval_drift(max_task=-1):
         gen_iter = generator.sample_EVERYTHING()
 
         for batch in gen_iter:
-            print(batch[0].shape, batch[-1])
-
             x_t, y_t, _, task_t, idx_t, block_id = batch
 
             if block_id == -1: continue
 
-            if 'imagenet' in args.dataset or 'kitti' in args.dataset:
-                target = []
-                for _idx, _task in zip(idx_t, task_t):
-                    loader = None
-                    for task__, loader_ in enumerate(train_loader):
-                        loader = loader_
-                        if task__ == _task: break
-                    try:
-                        target += [loader.dataset.__getitem__(_idx.item())[0]]
-                    except:
-                        import pdb; pdb.set_trace()
-                        xx = 1
+            # collect targets
+            target = []
+            for _idx, _task in zip(idx_t, task_t):
+                loader = None
+                for task__, loader_ in enumerate(train_loader):
+                    loader = loader_
+                    if task__ == _task: break
+                try:
+                    target += [loader.dataset.__getitem__(_idx.item())[0]]
+                except:
+                    import pdb; pdb.set_trace()
+                    xx = 1
 
-                if 'kitti' in args.dataset:
-                    target = torch.from_numpy(np.stack(target))
-                else:
-                    target = torch.stack(target).to(x_t.device)
-            elif 'cifar' in args.dataset:
-                target = loader.dataset.rescale(loader.dataset.x[idx_t])
-
+            target = torch.from_numpy(np.stack(target))
             target = target.to(x_t.device)
+
+            # calculate MSE with normalized target
+            max_ = target.reshape(x_t.size(0), -1).abs().max(dim=1)[0].view(-1, 1, 1, 1)
+            target = target / max_
+
             diff = (x_t - target).pow(2).mean(dim=(1,2,3))
             diff = diff[diff != 0.].mean()
+
+            dist_a, dist_b  = chamfer(target * max_, x_t * max_)
+            snnrmse = (.5 * dist_a.mean(-1) + .5 * dist_b.mean(-1)).sqrt().mean()
+            generator.blocks[0].log.log('drift_snnrmse_%d' % block_id, snnrmse, per_task=False)
 
             # remove nan
             if diff != diff: diff = torch.Tensor([0.])
@@ -135,15 +151,7 @@ def eval_drift(max_task=-1):
 # -------------------------------------------------------------------------------
 
 """ define training args """
-if args.optimization == 'global':
-    kwargs = {'inter_level_stream': True, 'inter_level_gradient':True}
-    # --> does worse on all aspect, even learning the most compressed layer!
-    # kwargs = {'inter_level_stream': False, 'inter_level_gradient':True}
-    # --> learn the easiest layer a tiny bit faster, but the other ones don't learn
-    #     (actually that was when recon was only on topmost (RGB)
-    # --> actually it comes down to the same comp graph as blockwise opt.
-else:
-    kwargs = {'all_levels_recon':True}
+kwargs = {'all_levels_recon':True}
 
 for run in range(args.n_runs):
 
@@ -161,7 +169,7 @@ for run in range(args.n_runs):
 
     # make dataloaders
     train_loader, valid_loader, test_loader  = \
-            [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True] + [False] * 2)]
+            [CLDataLoader(elem, args, train=False) for elem, t in zip(data, [True] + [False] * 2)]
 
     # fetch model and ship to GPU
     generator  = QStack(args).to(args.device)
@@ -171,19 +179,25 @@ for run in range(args.n_runs):
 
     step = 0
     for task, tr_loader in enumerate(train_loader):
+        print('task %d' % task)
 
         for epoch in range(args.num_epochs):
             generator.train()
             sample_amt = 0
 
             for i, (input_x, input_y, idx_) in enumerate(tr_loader):
+
+                # normalize point cloud
+                input_x, input_y, idx_ = input_x.to(args.device), input_y.to(args.device), idx_.to(args.device)
+                max_ = input_x.reshape(input_x.size(0), -1).abs().max(dim=1)[0].view(-1, 1, 1, 1)
+                input_x = input_x / max_
+
                 if i % 5 == 0 : print('  ', i, ' / ', len(tr_loader) , end='\r')
                 sample_amt += input_x.size(0)
 
-                input_x, input_y, idx_ = input_x.to(args.device), input_y.to(args.device), idx_.to(args.device)
                 if sample_amt > args.samples_per_task > 0: break
 
-                for n_iter in range(args.n_iters):
+                for n_iter in range(1 if generator.blocks[0].frozen_qt else args.n_iters):
 
                     if task > 0 and args.rehearsal:
                         re_x, re_y, re_t, re_idx, re_step = generator.sample_from_buffer(args.buffer_batch_size)
@@ -193,6 +207,10 @@ for run in range(args.n_runs):
 
                     out = generator(data_x,    **kwargs)
                     generator.optimize(data_x, **kwargs)
+
+                    dist_a, dist_b  = chamfer(input_x* max_, out[:input_x.size(0)] * max_)
+                    snnrmse = (.5 * dist_a.mean(-1) + .5 * dist_b.mean(-1)).sqrt().mean()
+                    generator.blocks[0].log.log('inc_snnrmse_0', snnrmse, per_task=False)
 
                     if task > 0 and args.rehearsal:
                         # potentially update the indices of `re_x`, or even it's compression level
@@ -210,19 +228,31 @@ for run in range(args.n_runs):
 
             # Test the model
             # -------------------------------------------------------------------------------
-            if task  % 5 == 0:
+            if True:#task  % 8 == 7: #and False:
+                #eval_drift()
                 eval_drift(max_task=task)
-                eval('valid', max_task=task)
+                #eval('valid', max_task=0)
 
-            buffer_sample, by, bt, _, _ = generator.sample_from_buffer(min(64, generator.all_stored - 5))
-            if 'kitti' in args.dataset:
-                from utils.kitti_utils import from_polar
-                buffer_sample = buffer_sample[torch.randperm(buffer_sample.size(0))][:12]
-                buffer_sample = (buffer_sample if args.xyz else from_polar(buffer_sample))[:12]
-                np.save(open('../lidars/{}_buf{}'.format(args.model_name, task), 'wb'),
-                        buffer_sample.cpu().data.numpy(), allow_pickle=False)
-            else:
-                save_image(rescale_inv(buffer_sample), '../samples/buf_%s_%d.png' % (args.model_name, task), nrow=8)
+            # save buffer samples
+            buffer_sample = torch.stack((out, data_x)).transpose(1,0).reshape(out.size(0) + data_x.size(0), *out.shape[1:])
+
+            from utils.kitti_utils import from_polar
+            buffer_sample = buffer_sample[torch.randperm(buffer_sample.size(0))][:12]
+            buffer_sample = (buffer_sample if args.xyz else from_polar(buffer_sample))[:12]
+            np.save(open('../lidars/{}_buf{}'.format(args.model_name, task), 'wb'),
+                    buffer_sample.cpu().data.numpy(), allow_pickle=False)
+
+            # save reconstructions
+            outs = [input_x, out[:input_x.size(0)]]
+            all_samples = torch.stack(outs)             # L, bs, 3, 32, 32
+            all_samples = all_samples.transpose(1,0)
+            all_samples = all_samples.contiguous()      # bs, L, 3, 32, 32
+            all_samples = all_samples.view(-1, *input_x.shape[-3:])
+
+            all_samples = (all_samples if args.xyz else from_polar(all_samples))[:12]
+            np.save(open('../lidars/{}_incoming_{}'.format(args.model_name, task), 'wb'),
+                    all_samples.cpu().data.numpy(), allow_pickle=False)
+
 
     # save model
     if not args.debug:

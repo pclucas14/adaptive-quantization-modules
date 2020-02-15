@@ -46,10 +46,11 @@ class XYDataset(torch.utils.data.Dataset):
 """ Template Dataset for Continual Learning """
 class CLDataLoader(object):
     def __init__(self, datasets_per_task, args, train=True):
-        test_bs, num_workers = 128, 8 #256, 8
+        test_bs, num_workers = 128, 8
 
         if 'kitti' in args.dataset:
-            test_bs = 16
+            test_bs = 64
+            num_workers = 0
         elif 'imagenet' in args.dataset:
             test_bs = 32
 
@@ -69,6 +70,9 @@ class CLDataLoader(object):
 
 
 def get_kitti_img(args):
+    """ preprocessed kitti images (taken from PredNet repository) """
+
+    assert args.dataset == 'kitti_img'
 
     if args.override_cl_defaults:
         raise NotImplementedError
@@ -88,81 +92,28 @@ def get_kitti_img(args):
 
     return train_ds, val_ds, val_ds
 
+
+def get_processed_kitti(args):
+    from utils.kitti_loader import preprocessed_kitti
+
+    root = '../lidar/processed_kitti'
+
+    task_id = 0
+    all_ds  = []
+    for env in os.listdir(root):
+        for recording in os.listdir(os.path.join(root, env)):
+            path = os.path.join(root, env, recording, 'processed.npz')
+            all_ds += [preprocessed_kitti(path)]
+            task_id += 1
+
+    all_ds = all_ds[::-1]
+
+
+    return all_ds, all_ds, all_ds
+
 """ Kitti Lidar continual dataset """
 def get_kitti(args):
-
-    if args.override_cl_defaults:
-        raise NotImplementedError
-
-    # get datasets
-    args.input_size = (3, 40, 512)
-    from utils.kitti_loader import Kitti
-
-    max_task = 61 if args.max_task == -1 else args.max_task
-
-    kitti  = Kitti(args)
-
-    train_, valid_, test_ = [], [], []
-
-    # do train / test / val separation
-    valid_t = [9,  19, 29, 39, 49, 59]
-    test_t  = [10, 20, 30, 40, 50, 60]
-
-    for i in range(max_task):
-        if i in valid_t:
-            valid_ += kitti.task_dict[i]
-        elif i in test_t:
-            test_  += kitti.task_dict[i]
-        else:
-            train_ += [kitti.task_dict[i]]
-
-    n_tasks = len(train_)
-    if args.debug:
-        n_tasks =11
-
-
-    # split the valid and test data into `n_tasks` chunks.
-    valid_chunk = len(valid_) // n_tasks
-    valid_ds = [valid_[i:i+valid_chunk] for i in range(n_tasks)]
-
-    test_chunk = len(test_) // n_tasks
-    test_ds = [test_[i:i+test_chunk] for i in range(n_tasks)]
-
-    train_ds = train_
-
-    train_loaders, valid_loaders, test_loaders = [], [], []
-
-    for i in range(n_tasks):
-        tr, va, te = Kitti(args), Kitti(args), Kitti(args)
-        tr.mapper = train_ds[i]
-        va.mapper = valid_ds[i]
-        te.mapper = test_ds[i]
-
-        train_loaders += [tr]
-        valid_loaders += [va]
-        test_loaders  += [te]
-
-    return train_loaders, valid_loaders, test_loaders
-    # ds_train
-
-    '''
-    dss_train = [Kitti(args, task_id=i) for i in range(max_task) if i != 17]
-    dss_valid = [Kitti(args, task_id=i) for i in range(max_task) if i != 17]
-    dss_test  = [Kitti(args, task_id=i) for i in range(max_task) if i != 17]
-
-    import pdb; pdb.set_trace()
-
-    for (ds_tr, ds_val, ds_te) in zip(dss_train, dss_valid, dss_test):
-        assert len(ds_tr.mapper) == len(ds_val.mapper) == len(ds_te.mapper)
-        len_ = len(ds_tr.mapper)
-        split_a, split_b = int(0.8 * len_), int(0.9 * len_)
-
-        ds_tr.mapper  = ds_tr.mapper[:split_a]
-        ds_val.mapper = ds_val.mapper[split_a:split_b]
-        ds_te.mapper  = ds_te.mapper[split_b:]
-    '''
-
-    return dss_train, dss_valid, dss_test
+    raise ValueError('please download the preprocessed version and used `preprocessed kitti`')
 
 
 def get_split_cifar10(args):
@@ -344,6 +295,7 @@ def get_split_cifar100(args):
     test_ds  = map(lambda x, y : XYDataset(x[0], x[1], **{'source':'cifar100', 'mask':y, 'task_ids':task_ids}), test_ds, masks)
 
     return train_ds, valid_ds, test_ds
+
 
 def get_miniimagenet(args):
     ROOT_PATH = '/home/eugene/data/filelists/miniImagenet/materials/images'

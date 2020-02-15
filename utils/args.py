@@ -64,7 +64,7 @@ def get_global_args(arglist):
             help='base directory in which all experiment logs will be held')
     add('--dataset', type=str, default='split_cifar10',
             choices=['split_cifar10','split_cifar100','miniimagenet','kitti',
-                'kitti_img'],
+                'kitti_img', 'processed_kitti'],
             help='Dataset name')
     add('--data_size', type=int, nargs='+', default=(3, 128, 128),
             help='height / width of the input. Note that only Imagenet'        +

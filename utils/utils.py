@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 # good'ol utils
 # ---------------------------------------------------------------------------------
 
-PRINT = ['recon', 'samples', 'decay', 'avg_l2', 'comp_rate', 'drift', 'capacity']
+PRINT = ['recon', 'samples', 'decay', 'avg_l2', 'comp_rate', 'drift', 'capacity', 'snnrmse']
 
 class RALog():
     """ keeps track of running averages of values """
@@ -103,6 +103,16 @@ def make_histogram(values, title, tmp_path='tmp.png'):
 
     np_img = np.array(Image.open(tmp_path))[:, :, :3]
     return np_img.transpose(2, 0, 1)
+
+
+def dump(lidar, nn='tmp'):
+    np.save(open('../lidars/%s' % nn, 'wb'),
+        lidar.cpu().data.numpy(), allow_pickle=False)
+
+def sho(x):
+    save_image(x * .5 + .5, 'tmp.png')
+    Image.open('tmp.png').show()
+
 
 
 class dotdict(dict):

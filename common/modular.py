@@ -4,17 +4,16 @@ from torch import nn
 from copy import deepcopy
 from torch.nn import functional as F
 
-from utils.utils     import RALog, make_histogram
+from utils.utils     import *
 from utils.buffer    import *
 from common.quantize import Quantize, GumbelQuantize, AQuantize, CQuantize, SoftQuantize
 from common.model    import Encoder, Decoder, ResNet18
 
+from utils.kitti_utils import *
+
 from torchvision.utils import save_image
 from PIL import Image
 
-def sho(x):
-    save_image(x * .5 + .5, 'tmp.png')
-    Image.open('tmp.png').show()
 
 # Quantization Building Block
 # ------------------------------------------------------
@@ -272,9 +271,9 @@ class QLayer(nn.Module):
 
         diffs = self.diffs
 
-        if self.args.dataset == 'kitti':
-            # lidar so l1 loss
+        if 'kitti' in self.args.dataset:# == 'kitti':
             recon = F.l1_loss(self.output, target)
+
         else:
             recon = F.mse_loss(self.output, target, reduction='none')
             if 'next_frame' in kwargs and self.id == 0:
