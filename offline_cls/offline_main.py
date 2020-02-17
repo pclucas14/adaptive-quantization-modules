@@ -208,11 +208,7 @@ for run in range(args.n_runs):
 
     set_seed(args.seed)
 
-
     kwargs = {'all_levels_recon':True}
-    if args.optimization == 'global':
-        # flow gradient through blocks when doing global optimization
-        kwargs.update({'inter_level_gradient':True})
 
     # fetch model and ship to GPU
     generator  = QStack(args).to(args.device)
@@ -246,9 +242,6 @@ for run in range(args.n_runs):
             for epoch in range(1):
                 generator.train()
                 sample_amt = 0
-
-                # create logging containers
-                train_log = defaultdict(list)
 
                 print('task : {} / {}'.format(task, len(train_loader)))
                 for i, (input_x, input_y, idx_) in enumerate(tr_loader):
