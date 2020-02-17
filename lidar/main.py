@@ -22,7 +22,7 @@ from utils.kitti_utils import show_pc, from_polar
 from common.modular import QStack
 
 args = get_args()
-args.normalize = False # True
+args.normalize = False
 print(args)
 
 # functions
@@ -33,7 +33,7 @@ prepro = lambda x : x.reshape(x.size(0), 3, -1).transpose(-2, -1)
 chamfer = lambda x, y : chamfer_raw(prepro(from_polar(x)), prepro(from_polar(y)))[:2]
 
 # spawn writer
-args.log_dir = 'test' if args.debug else join('icml_appendix2', args.model_name)
+args.log_dir = join('icml_fix', args.model_name) + args.suffix
 sample_dir   = join(args.log_dir, 'samples')
 writer       = SummaryWriter(log_dir=args.log_dir)
 
@@ -92,6 +92,7 @@ def eval(name, max_task=-1, break_after=-1):
             all_samples = (all_samples if args.xyz else from_polar(all_samples))[:12]
             np.save(open('../lidars/{}_test{}_{}'.format(args.model_name, task_t, max_task), 'wb'),
                     all_samples.cpu().data.numpy(), allow_pickle=False)
+
 
 def eval_drift(max_task=-1):
     with torch.no_grad():
@@ -169,7 +170,7 @@ for run in range(args.n_runs):
 
     # make dataloaders
     train_loader, valid_loader, test_loader  = \
-            [CLDataLoader(elem, args, train=False) for elem, t in zip(data, [True] + [False] * 2)]
+            [CLDataLoader(elem, args, train=t) for elem, t in zip(data, [True] + [False] * 2)]
 
     # fetch model and ship to GPU
     generator  = QStack(args).to(args.device)
@@ -228,10 +229,7 @@ for run in range(args.n_runs):
 
             # Test the model
             # -------------------------------------------------------------------------------
-            if True:#task  % 8 == 7: #and False:
-                #eval_drift()
-                eval_drift(max_task=task)
-                #eval('valid', max_task=0)
+            eval_drift(max_task=task)
 
             # save buffer samples
             buffer_sample = torch.stack((out, data_x)).transpose(1,0).reshape(out.size(0) + data_x.size(0), *out.shape[1:])
