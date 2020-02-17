@@ -327,12 +327,12 @@ def get_args():
         all_comp_rates = ''.join(['{:.2f}^'.format(args.layers[i].comp_rate) \
                             for i in range(args.num_blocks)])
 
-        args.model_name = 'DS{}_NB{}_RTH{}_Comp{}_Coef{:.2f}_{}'.format(
+        args.model_name = 'DS{}_NB{}_RTH{}_Comp{}_NI{}_{}'.format(
                                 args.dataset[-10:],
                                 args.num_blocks,
                                 args.recon_th,
                                 all_comp_rates,
-                                coefs,
+                                args.n_iters,
                                 np.random.randint(10000))
         args.model_name = 'test' if args.debug else args.model_name
 
