@@ -271,7 +271,8 @@ class QLayer(nn.Module):
 
         diffs = self.diffs
 
-        if 'kitti' in self.args.dataset:# == 'kitti':
+        if 'kitti' in self.args.dataset:
+            # recon = F.l1_loss(self.output, target)
             recon = F.l1_loss(self.output, target)
 
         else:
