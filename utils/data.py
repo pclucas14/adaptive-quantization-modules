@@ -101,15 +101,18 @@ def get_processed_kitti(args):
     task_id = 0
     all_ds  = []
     for env in os.listdir(root):
+        env_rec = []
         for recording in os.listdir(os.path.join(root, env)):
             path = os.path.join(root, env, recording, 'processed.npz')
-            all_ds += [preprocessed_kitti(path)]
+            env_rec += [preprocessed_kitti(path, xyz=args.xyz)]
             task_id += 1
+
+        all_ds += env_rec
 
     all_ds = all_ds[::-1]
 
-
     return all_ds, all_ds, all_ds
+
 
 """ Kitti Lidar continual dataset """
 def get_kitti(args):

@@ -17,9 +17,10 @@ except:
 
 class preprocessed_kitti(data.Dataset):
     """ load the preprocessed version of the dataset """
-    def __init__(self, path):
+    def __init__(self, path, xyz=False):
         self.path = path
         self.data = np.load(path)
+        self.xyz  = xyz
 
     def __len__(self):
         return len(self.data.keys())
@@ -33,6 +34,9 @@ class preprocessed_kitti(data.Dataset):
             # reload
             self.data = np.load(self.path)
             return self.__getitem__(i)
+
+        if self.xyz:
+            out = from_polar_np(out[None])[0]
 
         return out, np.array([0]).squeeze(0), i
 

@@ -80,8 +80,17 @@ def to_polar(velo):
     return out
 
 def from_polar(velo):
+
+    assert velo.ndim == 4, 'expects BS x C x H x W tensor'
+    assert int(velo.size(1)) in [2,3], 'second axis must be for channels'
+
+    if velo.size(1) == 3:
+        # already in xyz
+        return velo
+
     angles = np.linspace(0, np.pi * 2, velo.shape[-1])
     dist, z = velo[:, 0], velo[:, 1]
+
     x = torch.Tensor(np.cos(angles)).cuda().unsqueeze(0).unsqueeze(0) * dist
     y = torch.Tensor(np.sin(angles)).cuda().unsqueeze(0).unsqueeze(0) * dist
     out = torch.stack([x,y,z], dim=1)
