@@ -1,4 +1,4 @@
-# Online Continual Compression via Stacked Quantization Modules (SQM)
+# Online Learned Continual Compression with Adaptive Quantization Modules (AQM)
 Stacking Quantization blocks for efficient lifelong online compression </br>
 Code for reproducing all results in our paper  <!---, which can be found [here](paper.pdf) </br> -->
 
