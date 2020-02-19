@@ -9,7 +9,8 @@ Code for reproducing all results in our paper  <!---, which can be found [here](
 - Mayavi (for displaying LiDARs only)
 
 ## Structure
-
+    ├── Atari
+        ├── ....                # files to run Atari experiments
     ├── Common 
         ├── modular.py          # Module (QLayer) and Stacked modules (QStack). Includes most key ops, such as adaptive buffer        
         ├── quantize.py         # Discretization Ops (GumbelSoftmax, Vector/Tensor Quantization and Argmax Quantization)
@@ -42,6 +43,9 @@ python offline_main.py --recon_th 0.02 --mem_size 1000 --dataset miniimagenet --
  
 ## Running Experiments and Logging
 When running code, buffer samples and reconstructions are by default dumped in `samples` and `lidars` directory. You can run `mkdir samples; mkdir lidars` in the home directory to avoid errors before the first run. Tips on how to visualize data (especially for LiDAR) are available in the experiment specific directories. 
+
+## Reproducibility
+Please have a look at the README file in each experiment folder
 
 ## Acknowledgements 
 We would like to thank authors of the following repositories (from which we borrowed code) for making the code public. </br>

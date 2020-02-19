@@ -33,6 +33,7 @@ writer.add_text('hyperparameters', str(args), 0)
 
 print_and_save_args(args, args.log_dir)
 print('logging into %s' % args.log_dir)
+maybe_create_dir('../samples')
 maybe_create_dir(sample_dir)
 best_test = float('inf')
 
