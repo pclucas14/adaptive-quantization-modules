@@ -1,6 +1,6 @@
-# Online Continual Compression via Stacked Quantization Modules (SQM)
+# Online Learned Continual Compression with Adaptive Quantization Modules (AQM)
 Stacking Quantization blocks for efficient lifelong online compression </br>
-Code for reproducing all results in our paper, which can be found [here](paper.pdf) </br>
+Code for reproducing all results in our paper  <!---, which can be found [here](paper.pdf) </br> -->
 
 ## (key) Requirements 
 - Python 3.7
@@ -35,7 +35,7 @@ Code for reproducing all results in our paper, which can be found [here](paper.p
  - specific block parameters are specified AFTER regular args. 
  e.g. for a 2 block architecture
  ```
-python offline_main.py --recon_th 0.008 0.015 --mem_size 1000 --dataset miniimagenet --n_classes 100 --data_size 3 128 128 ---layer_0 --commitment_cost 2 --decay 0.6 --embed_grad_update 0 --learning_rate 5e-3 --num_embeddings 128 --quant_size 1 --stride 2 --downsample 2 ---layer_1 --commitment_cost 2 --decay 0.6 --downsample 2 --embed_grad_update 0 --learning_rate 1e-3 --num_codebooks 2 --num_embeddings 128 --quant_size 1 1 --stride 2
+python offline_main.py --recon_th 0.02 --mem_size 1000 --dataset miniimagenet --n_classes 100 --data_size 3 128 128 ---layer_0 --learning_rate 5e-3 --num_embeddings 128  --downsample 2 ---layer_1  --downsample 2 --num_codebooks 2 --num_embeddings 128 --stride 2
  ```
  It is expected that `--num_blocks <value>` matches the amount of `--layer_i` flags
  
