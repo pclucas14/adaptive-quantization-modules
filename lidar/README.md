@@ -1,9 +1,9 @@
 ## LiDAR experiments
 
-the run reported in the paper is a 3Block SQM. You can reproduce it by running the following command
+To reproduce the SNNRSME in the paper, along with the displayed sampled please run 
 
 ```
-python main.py --n_iters 3 --num_blocks 3 --mem_size 500 --dataset kitti --recon_th 7e-5 7e-5 7e-5 --data_size 2 40 512 --n_classes 1 ---layer_0 --stride 2 --downsample 2 --commitment_cost .5 --decay 0.6 --num_embeddings 256 --embed_grad_update 0 --quant_size 1 --num_codebooks 1 --learning_rate 1e-3 ---layer_1 --stride 1 2 --downsample 2 --commitment_cost .5 --decay 0.6 --num_embeddings 256 --embed_grad_update 0 --learning_rate 5e-4 --num_codebooks 1 --quant_size 1 ---layer_2 --stride 1 2 --downsample 2 --commitment_cost .5 --decay 0.6 --num_embeddings 256 --embed_grad_update 0 --learning_rate 5e-4 --num_codebooks 1 --quant_size 1
+bash reproduce_lidar.sh
 ```
 
 By default, the code will save lidars from the buffer, as well as reconstructions from the test set in `../lidars`. 
