@@ -272,7 +272,7 @@ for run in range(args.n_runs):
 
                 if args.rehearsal:
                     generator.add_reservoir(input_x, input_y, task, idx_, step=step)
-                    #generator.add_to_buffer(input_x, input_y, task, idx_, step=step)
+                    # generator.add_to_buffer(input_x, input_y, task, idx_, step=step)
 
                 step += 1
 
@@ -283,8 +283,9 @@ for run in range(args.n_runs):
         buffer_sample, by, bt, _, _ = generator.sample_from_buffer(64)
         save_image(rescale_inv(buffer_sample), '../samples/buf__%s_%d.png' % \
                 (args.model_name, task), nrow=8)
+
         eval('valid', max_task=task)
-    eval('test',  max_task=task)
+        eval('test',  max_task=task)
 
     print(RESULTS[:, 0, -1].mean(), RESULTS[:, 1, -1].mean())
 
