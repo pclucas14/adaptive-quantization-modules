@@ -210,6 +210,46 @@ class QLayer(nn.Module):
                     dev = kwargs['device']
                     to_be_returned = [item.to(dev) for item in to_be_returned]
 
+                if kwargs.get('noisy_qt', 0.) > 0:
+                    noisy_p = kwargs['noisy_qt']
+                    assert 0 < noisy_p < 1., 'must be a probability'
+
+                    idx = to_be_returned[1]
+
+                    """ replacing with random indices """
+                    # rand_idx = torch.zeros_like(idx).float().uniform_(0, self.args.num_embeddings)
+                    # rand_idx = rand_idx.long()
+
+                    def batch_distance_matrix(A, B):
+                        r_A = (A * A).sum(dim=2, keepdim=True)
+                        r_B = (B * B).sum(dim=2, keepdim=True)
+                        m = torch.bmm(A, B.permute(0, 2, 1))
+                        D = r_A - 2 * m + r_B.permute(0, 2, 1)
+                        return D
+
+                    """ replacing with close vectors  """
+                    K = 5
+                    dist = batch_distance_matrix(qt.embed, qt.embed)
+                    closest_K = dist.topk(K+1, dim=-1, largest=False, sorted=True)[-1]
+                    # remove self neighbor
+                    closest_K = closest_K[:, :, 1:]
+
+                    # for every index, sample from its 5 closest neighbours
+                    random_sample = torch.zeros_like(idx).float().uniform_(0, K).long()
+
+                    out = []
+                    for i in range(idx.size(1)): # iterate over qts
+                        out_i = closest_K[i][idx[:, i].flatten(), random_sample[:, i].flatten()]
+                        out_i = out_i.view_as(idx[:, i])
+                        out += [out_i]
+
+                    rand_idx = torch.stack(out, 1)
+
+                    noisy_idx = torch.zeros_like(idx).float().fill_(noisy_p).bernoulli()
+
+                    # noisy indices
+                    to_be_returned[1] = (idx * (1 - noisy_idx) + rand_idx * noisy_idx).long()
+
                 to_be_returned = [qt.idx_2_hid(to_be_returned[1])] + to_be_returned
 
                 yield to_be_returned
@@ -340,6 +380,7 @@ class QStack(nn.Module):
             self.data_size = np.prod(args.data_size)
             self.can_store_reg = mem_size // (self.data_size)
 
+            print('can store {:.4f} regular samples'.format(self.can_store_reg))
             # whether we need to recompute the buffer statistics
             self.up_to_date_mu = self.up_to_date_as  = False
 
