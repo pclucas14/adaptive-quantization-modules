@@ -39,6 +39,70 @@ def sho(x):
     save_image(x * .5 + .5, 'tmp.png')
     Image.open('tmp.png').show()
 
+def show(x):
+    x = x.reshape(-1, 3, 32, 32).transpose(0, 2, 3, 1).reshape(-1, 32, 3)
+    Image.fromarray(x).show()
+
+def compress_batch(x, q=75, get_comp_factor=False, get_distortion=False):
+    all_comp = []
+
+    from io  import BytesIO
+    from PIL import Image
+    base = 32 * 32 * 3
+    out = []
+
+    x_og = x
+
+    x = (rescale_inv(x) * 255.).cpu().data.numpy().astype('uint8')
+
+    for img in x:
+        img = img.transpose(1, 2, 0)
+        img = Image.fromarray(img)
+        stream = BytesIO()
+        img.save(stream, 'JPEG', quality=q, optimice=True)
+        size = stream.getbuffer().nbytes
+
+        if get_comp_factor:
+            all_comp += [float(base) / size]
+        else:
+            outimg = Image.open(stream)
+            out += [np.array(outimg)]
+
+    if get_comp_factor:
+        return sum(all_comp) / len(all_comp)
+
+    out = np.stack(out)
+    out = (out.astype('float32') / 255. - 0.5) * 2.
+    out = torch.from_numpy(out).cuda()
+    out = out.permute(0, 3, 1, 2).contiguous()
+
+    if get_distortion:
+        mse = F.mse_loss(out.to(x_og.device), x_og)
+        return mse
+
+    return out
+
+
+def get_comp_factor(dataloader):
+    all_comps = []
+    for ds in dataloader:
+        for batch in ds:
+            comp_factor = compress_batch(batch[0], get_comp_factor=True,
+                    q=args.jpeg_quality)
+            all_comps += [comp_factor]
+
+    return sum(all_comps) / len(all_comps)
+
+def get_distortion(dataloader):
+    all_dists = []
+    for ds in dataloader:
+        for batch in ds:
+            dist = compress_batch(batch[0], get_distortion=True,
+                    q=args.jpeg_quality)
+            all_dists += [dist]
+
+    return sum(all_dists) / len(all_dists)
+
 
 def eval_drift(max_task=-1):
     with torch.no_grad():
@@ -55,7 +119,7 @@ def eval_drift(max_task=-1):
 
         for batch in gen_iter:
 
-            x_t, y_t, task_t, idx_t, block_id = batch
+            x_t, y_t, _, task_t, idx_t, block_id = batch
 
             if block_id == -1: continue
 
@@ -181,6 +245,14 @@ for run in range(args.n_runs):
                     zip(data, [True, False, False])
     ]
 
+    if args.jpeg_baseline and run == 0:
+        comp_factor = get_comp_factor(train_loader)
+        distortion  = get_distortion(train_loader)
+        print('comp factor : {:.4f}\tMSE : {:.4f}'.format(comp_factor, distortion))
+        args.comp_factor = comp_factor
+        args.mem_size = int(args.mem_size * comp_factor)
+        print('comp factor {:.4f}, new mem size {}'.format(comp_factor, args.mem_size))
+
     kwargs = {'all_levels_recon':True}
 
     # fetch model and ship to GPU
@@ -216,7 +288,7 @@ for run in range(args.n_runs):
                 if sample_amt > args.samples_per_task > 0: break
                 sample_amt += input_x.size(0)
 
-                input_x = input_x.to(args.device)
+                input_x = input_x_og = input_x.to(args.device)
                 input_y = input_y.to(args.device)
                 idx_    = idx_.to(args.device)
 
@@ -236,6 +308,11 @@ for run in range(args.n_runs):
 
                     if task > 0 and args.rehearsal:
                         generator.buffer_update_idx(re_x, re_y, re_t, re_idx, re_step)
+
+                    if args.jpeg_baseline and n_iter == 0:
+                        input_x = compress_batch(input_x, q=args.jpeg_quality)
+                        if task > 0:
+                            re_x = compress_batch(re_x)
 
                     if n_iter < args.cls_n_iters:
                         opt_class.zero_grad()
@@ -271,7 +348,7 @@ for run in range(args.n_runs):
                             should_print='kitti' in args.dataset )
 
                 if args.rehearsal:
-                    generator.add_reservoir(input_x, input_y, task, idx_, step=step)
+                    generator.add_reservoir(input_x_og, input_y, task, idx_, step=step)
                     # generator.add_to_buffer(input_x, input_y, task, idx_, step=step)
 
                 step += 1
@@ -279,7 +356,7 @@ for run in range(args.n_runs):
             # Test the model
             # ------------------------------------------------------------------
             generator.update_ema_decoder()
-            # eval_drift(max_task=task)
+            eval_drift(max_task=task)
         buffer_sample, by, bt, _, _ = generator.sample_from_buffer(64)
         save_image(rescale_inv(buffer_sample), '../samples/buf__%s_%d.png' % \
                 (args.model_name, task), nrow=8)
