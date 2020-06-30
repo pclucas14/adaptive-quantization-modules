@@ -1,0 +1,21 @@
+data_args:
+    dataset    : 'split_cifar10'
+    data_shp: [3, 32, 32]
+    n_classes: 10
+
+block_args:
+    0:
+        in_channel: 3
+        channel: 100
+        argmin_shp: [16, 16]
+        downsample: 2
+        n_embeds: 16
+
+opt_args:
+    opt: 'greedy'
+    commit_coef: 2
+    input: 'z_e'
+
+mem_args:
+    recon_th: 0.5
+    mem_size: 20

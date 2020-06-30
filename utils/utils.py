@@ -1,4 +1,6 @@
 import os
+import sys
+import pdb
 import json
 import torch
 import numpy as np
@@ -16,10 +18,66 @@ matplotlib.use('pdf')
 import matplotlib.mlab as mlab
 import matplotlib.pyplot as plt
 
-# good'ol utils
+# data
 # ---------------------------------------------------------------------------------
+def to_polar(velo):
+    if len(velo.shape) == 4:
+        velo = velo.permute(1, 2, 3, 0)
 
-PRINT = ['recon', 'samples', 'decay', 'avg_l2', 'comp_rate', 'drift', 'capacity', 'snnrmse']
+    if velo.shape[2] > 4:
+        assert velo.shape[0] <= 4
+        velo = velo.permute(1, 2, 0, 3)
+        switch=True
+    else:
+        switch=False
+
+    # assumes r x n/r x (3,4) velo
+    dist = torch.sqrt(velo[:, :, 0] ** 2 + velo[:, :, 1] ** 2)
+    # theta = np.arctan2(velo[:, 1], velo[:, 0])
+    out = torch.stack([dist, velo[:, :, 2]], dim=2)
+
+    if switch:
+        out = out.permute(2, 0, 1, 3)
+
+    if len(velo.shape) == 4:
+        out = out.permute(3, 0, 1, 2)
+
+    return out
+
+
+def from_polar(velo):
+
+    assert velo.ndim == 4, 'expects BS x C x H x W tensor'
+    assert int(velo.size(1)) in [2,3], 'second axis must be for channels'
+
+    if velo.size(1) == 3:
+        # already in xyz
+        return velo
+
+    angles = np.linspace(0, np.pi * 2, velo.shape[-1])
+    dist, z = velo[:, 0], velo[:, 1]
+
+    x = torch.Tensor(np.cos(angles)).cuda().unsqueeze(0).unsqueeze(0) * dist
+    y = torch.Tensor(np.sin(angles)).cuda().unsqueeze(0).unsqueeze(0) * dist
+    out = torch.stack([x,y,z], dim=1)
+
+    return out
+
+
+def get_chamfer():
+    from chamfer_distance.chamfer_distance import ChamferDistance
+
+    chamfer_raw = ChamferDistance()
+    prepro      = lambda x : x.reshape(x.size(0), 3, -1).transpose(-2, -1)
+
+    chamfer = lambda x, y : chamfer_raw(prepro(from_polar(x)), prepro(from_polar(y)))[:2]
+
+    return chamfer
+
+
+
+# logging
+# ---------------------------------------------------------------------------------
 
 class RALog():
     """ keeps track of running averages of values """
@@ -30,23 +88,16 @@ class RALog():
     def reset(self):
         self.storage  = OD()
         self.count    = OD()
-        self.per_task = OD()
 
-    def one_liner(self):
-        # import pdb; pdb.set_trace()
-        fill = lambda x, y : (x + ' ' * max(0, y - len(x)))[-y:]
-        out = ''
-        for key, value in self.storage.items():
-            if sum([x in key for x in PRINT]) > 0:
-                out += fill(key, 20)
-                if type(value) == np.ndarray:
-                    out += str(value)
-                else:
-                    out += '{:.4f}\t'.format(value)
+    def avg_dict(self, prefix=''):
+        out = {}
+        for key in self.storage.keys():
+            avg = self.storage[key]# / self.count[key]
+            out[prefix + key] = avg
 
         return out
 
-    def log(self, key, value, per_task=True):
+    def log(self, key, value):
         if 'tensor' in str(type(value)).lower():
             if value.numel() == 1:
                 value = value.item()
@@ -56,7 +107,6 @@ class RALog():
         if key not in self.storage.keys():
             self.count[key] = 1
             self.storage[key] = value
-            self.per_task[key] = per_task
         else:
             prev = self.storage[key]
             cnt  = self.count[key]
@@ -64,55 +114,46 @@ class RALog():
             self.count[key] += 1
 
 
-def average_log(dic):
+# dict wrappers
+# ---------------------------------------------------------------------------------
 
-    keys = dic.keys()
-    # get unique keys
-    keys = [x.split('_')[0] for x in keys]
-    keys = list(set(keys))
+def dict_cat(all_dicts, copy=False, discard=[]):
+    assert len(all_dicts) > 1
+    ref = all_dicts[0]
+    if copy: ref = deepcopy(ref)
 
-    avgs = {}
-    for super_key in keys:
-        current = OD()
-        for key in dic.keys():
-            if super_key in key:
-                task = int(key.split('_')[1])
-                current[task] = sum([x for x in dic[key]]) / len(dic[key])
-        avgs[super_key] = current
+    for adict in all_dicts[1:]:
+        B_ = None
+        for key, value in adict.items():
+            if key in discard:
+                continue
+            if B_ is None:
+                B_ = ref[key].size(0)
+            if isinstance(ref[key], int):
+                ref[key] = value.new(B_).fill_(ref[key])
 
-    return avgs
+            ref[key] = torch.cat((ref[key], value))
 
-
-def make_histogram(values, title, tmp_path='tmp.png'):
-    plt.clf()
-    max_idx = np.argwhere(values > 0)
-
-    if max_idx.shape[0] > 0:
-        max_idx = max_idx.max()
-    else:
-        max_idx = values.shape[0]
-
-    values = values[:max_idx]
-
-    plt.bar(np.arange(values.shape[0]), values)
-
-    plt.title(title)
-    plt.grid(True)
-
-    plt.savefig(tmp_path, quality=10)
-
-    np_img = np.array(Image.open(tmp_path))[:, :, :3]
-    return np_img.transpose(2, 0, 1)
+    return ref
 
 
-def dump(lidar, nn='tmp'):
-    np.save(open('../lidars/%s' % nn, 'wb'),
-        lidar.cpu().data.numpy(), allow_pickle=False)
+def dict_split(block_dicts, suffix, lens):
+    for adict in [x for x in block_dicts.values()]:
+        for key in [x for x in adict.keys()]:
+            value = adict[key]
 
-def sho(x):
-    save_image(x * .5 + .5, 'tmp.png')
-    Image.open('tmp.png').show()
+            if value.ndim == 0:
+                continue
 
+            for suf, len_ in zip(suffix, lens):
+                new_key = key + suf
+                new_val = value[:len_]
+                value   = value[len_:]
+                adict[new_key] = new_val
+
+            assert value.size(0) == 0
+
+    return block_dicts
 
 
 class dotdict(dict):
@@ -121,69 +162,8 @@ class dotdict(dict):
     __delattr__ = dict.__delitem__
 
 
-def save_args(args, path):
-    c_args = vars(deepcopy(args))
-
-    # 1) convert all nested (1st level) dics to namespaces
-    n_layers = len(args.layers)
-
-    for layer_idx in range(n_layers):
-        c_args['layers'][layer_idx] = vars(deepcopy(args.layers[layer_idx]))
-
-    with open(os.path.join(path, 'args.json'), 'w') as f:
-        json.dump(c_args, f)
-
-
-def load_args(path):
-    with open(os.path.join(path, 'args.json'), 'r') as f:
-        args_dict = json.load(f)
-
-    # 1) convert all nested (1st level) dics to namespaces
-    n_layers = len(args_dict['layers'])
-
-    dot_args = dotdict(args_dict)
-
-    dot_args.layers = {}
-
-    for layer_idx in range(n_layers):
-        dot_args.layers[layer_idx] = dotdict(args_dict['layers'][str(layer_idx)])
-
-    # Maybe the arg file is missing some newer ones. In that case, give
-    # them the default value
-    # TODO
-
-    return dot_args
-
-
-def print_and_save_args(args, path):
-    print(args)
-    save_args(args, path)
-
-
-def load_model_from_file(path):
-    old_args = load_args(path)
-
-    from common.modular import QStack
-
-    # create model
-    model = QStack(old_args)
-
-    load_model(model, os.path.join(path, 'gen.pth'))
-
-    return model, old_args
-
-
-def set_seed(seed):
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-
-def maybe_create_dir(path):
-    if not os.path.exists(path):
-        os.makedirs(path)
-
+# Model
+# ---------------------------------------------------------------------------------
 
 def load_model(model, path):
     # load weights
@@ -191,35 +171,12 @@ def load_model(model, path):
 
     for name, param in params.items():
         if 'buffer' in name.lower():
-            if 'reg' in name.lower():
-                model.reg_buffer.expand(param.size(0))
+            if 'dummy' in name.lower():
+                model.dummy.buffer.expand(param.size(0))
             else:
                 parts = name.split('.')
                 block_id  = int(parts[1])
                 model.blocks[block_id].buffer.expand(param.size(0))
 
-    xx = 1
-
     model.load_state_dict(params)
-
-
-# loss functions
-# ---------------------------------------------------------------------------------
-
-def logistic_ll(mean, logscale, sample, binsize=1 / 256.0):
-    # actually discretized logistic, but who cares
-    scale = torch.exp(logscale)
-    sample = (torch.floor(sample / binsize) * binsize - mean) / scale
-    logp = torch.log(torch.sigmoid(sample + binsize / scale) - torch.sigmoid(sample) + 1e-7)
-    return logp.sum(dim=(1,2,3))
-
-def gaussian_ll(mean, logscale, sample):
-    logscale = logscale.expand_as(mean)
-    dist = D.Normal(mean, torch.exp(logscale))
-    logp = dist.log_prob(sample)
-    return logp.sum(dim=(1,2,3))
-
-
-if __name__ == '__main__':
-    model = load_model_from_file('runs_rebuttal/EGU0_NB2_Comp13.71^27.43^_Coef2.60_4429')
-    import pdb; pdb.set_trace()
+    print('successfully loaded model')

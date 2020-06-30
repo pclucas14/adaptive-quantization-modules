@@ -1,0 +1,33 @@
+data_args:
+    dataset    : 'miniimagenet'
+    data_shp: [3, 128, 128]
+    n_classes: 100
+
+block_args:
+    0:
+        in_channel: 3
+        channel: 100
+        argmin_shp: [32, 32]
+        downsample: 4
+        n_embeds: 1024
+        n_codebooks: 2
+        decay: 0.6
+        lr: 0.001
+    1:
+        in_channel: 100
+        channel: 100
+        argmin_shp: [32, 32]
+        downsample: 1
+        n_embeds: 1024
+        n_codebooks: 1
+        decay: 0.6
+        lr: 0.001
+
+mem_args: 
+    recon_th: 0.025
+    mem_size: 10
+
+opt_args:
+    opt: 'greedy'
+    commit_coef: 2
+    input: 'z_q'

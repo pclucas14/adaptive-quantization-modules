@@ -3,6 +3,7 @@ import torch
 
 from torch.utils.cpp_extension import load
 cd = load(name="cd",
+          build_directory='/private/home/lucaspc/repos/aqm-lite/chamfer_distance',
           sources=["chamfer_distance/chamfer_distance.cpp",
                    "chamfer_distance/chamfer_distance.cu"])
 

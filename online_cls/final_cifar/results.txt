@@ -1,4 +1,0 @@
-# this file was created by running `python parse.py > results.txt`
-
-mem size : 500	 recon_th :1.0000	 acc 46.0950 += 0.8532	 fgt 43.2325 += 1.3234
-mem size : 200	 recon_th :1.0000	 acc 40.5750 += 0.9614	 fgt 48.6325 += 0.9985

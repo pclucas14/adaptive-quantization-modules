@@ -4,54 +4,8 @@ import utils
 import argparse
 import numpy as np
 
-def get_default_layer_args(arglist):
-    """ layer / block specific parameters. Default values are given here """
 
-    parser = argparse.ArgumentParser(description='Vector Quantization')
-    add = parser.add_argument
-
-    D = 100
-
-    # Quantization settings
-    add('--num_codebooks', type=int, default=1,
-            help='Number of codebooks. See `Sliced Vector Quantization` in '   +
-           '`Fast Decoding in Sequence Models Using Discrete Latent Variables`')
-    add('--embed_dim', type=int, default=D,
-            help='Embedding size, `D` in VQVAE paper')
-    add('--num_embeddings', type=int, default=128,
-            help='Number of embeddings to choose from, `K` in VQVAE paper')
-    add('--commitment_cost', type=float, default=2,
-            help='Beta in the loss function. from VQVAE paper')
-    add('--decay', type=float, default=0.6,
-            help='Moving av decay for codebook update')
-    add('--model', type=str, choices=['vqvae', 'gumbel', 'argmax', 'continuous', 'soft'],
-            default='vqvae',
-            help='type of discretization to use')
-    add('--embed_grad_update', type=int, default=0,
-            help='use `1` to train codebook with gradient updates, and `0` '   +
-            'EMA updates. this flag is only relevant if `--model == vqvae')
-
-    # Architectural settins
-    add('--num_hiddens', type=int, default=D,
-            help='Number of channels for Convolutions, not ResNet. For '       +
-            'Encoder and Decoder')
-    add('--num_residual_hiddens', type=int, default = D,
-            help='Number of channels for ResNet. For Encoder and Decoder')
-    add('--num_residual_layers', type=int, default=1,
-            help='Number of residual blocks in Encoder and Decoder')
-    add('--downsample', type=int, default=1,
-            help='how much to downsample the spatial resolution of the input. '+
-            'the integer given here corresponds to the number of convolutions '+
-            'of stride `--stride` applied on the input. E.g. if given '        +
-            '--downsample 2 --stride 1 2` and the input of said layer is '     +
-            '16 x 16 x C, the latent representation will have size 16 x 4 x C')
-
-    add('--learning_rate', type=float, default=1e-3,
-            help='learning rate for the specific block')
-    return parser.parse_args(arglist)
-
-
-def get_global_args(arglist):
+def get_global_args():
     """ Regular (not layer specific) arguments """
 
     parser = argparse.ArgumentParser(description='Vector Quantization')
@@ -63,22 +17,22 @@ def get_global_args(arglist):
     add('--run_dir', type=str, default='runs',
             help='base directory in which all experiment logs will be held')
     add('--dataset', type=str, default='split_cifar10',
-            choices=['split_cifar10','split_cifar100','miniimagenet','kitti',
-                'kitti_img', 'processed_kitti'],
+            choices=['split_cifar10','split_cifar100','miniimagenet',
+                'processed_kitti'],
             help='Dataset name')
     add('--data_size', type=int, nargs='+', default=(3, 128, 128),
             help='height / width of the input. Note that only Imagenet'        +
             ' supports the use of this flag')
     add('--batch_size', type=int, default=10,
             help='batch size of the incoming data stream')
-    add('--buffer_batch_size', type=int, default=-1,
+    add('--buffer_batch_size', type=int, default=10,
             help='batch size used for rehearsal. Setting it to `-1` will make' +
             'buffer_batch_size equal to batch_size')
-    add('--max_iterations', type=int, default=None,
-            help="Max iteration per epoch, for debugging (default: None)")
     add('--num_epochs', type=int, default=1,
             help='number of epochs per task. Use 1 for online learning')
     add('--device', type=str, default='cuda')
+    add('--name', type=str, default='test')
+
 
     # CL specific
     add('--max_task', type=int, default=-1,
@@ -93,50 +47,17 @@ def get_global_args(arglist):
             help='Use `1` for multi-head experiments and `0` for single head. '+
             'Will only be used if `--override_cl_defaults`')
 
-    # Atari
-    add('--rl_env', type=str, default='pitfall',
-            choices=['pitfall', 'pong', 'mspacman'])
-    add('--rl', action='store_true')
-
-
-    # new ones
-    add('--optimization', type=str, default='blockwise',
-            choices=['blockwise', 'global'],
-            help='for modular training, where no gradient is communicated '    +
-            'between modules, use `blockwise`. If you want to train all '      +
-            'modules jointly, use `global`.')
-    add('--global_learning_rate', type=float, default=1e-4,
-            help='learning rate used if `--optimization global`. The per layer'+
-            'learning rates are unused in this setting')
-    add('--num_blocks', type=int, default=1,
-            help='number of QLayers / modules / blocks  in QStack')
-    add('--xyz', action='store_true',
-            help='if True, xyz coordinates are used instead of polar. '        +
-            'only used fir LiDAR')
-    add('--scale', type=int, default=1,
-            help='if True, point cloud is normalized. Should never be set to ' +
-            'false when training')
-    add('--from_compressed', type=int, default=1,
-            help='deprecated')
 
     # Misc
     add('--seed', type=int, default=521)
     add('--debug', action='store_true')
-    add('--recon_th', type=float, nargs='+', default=[1e-3],
-            help='satisfying reconstruction threshold')
-    add('--eps_th', type=float, default=-1, #0.005,
-            help='distortion allowed between old reconstruction and newer one '+
-            'when (re) encoding an image')
 
-    add('--gen_weights', type=str, default=None)
 
     # From old repo
     add('--n_iters', type=int, default=1,
             help='number of iterations to perform on incoming data')
     add('--samples_per_task', type=int, default=-1,
             help='number of samples per CL task. Use `-1` for all samples')
-    add('--update_representations', type=int, default=1,
-            help='if False, representations in the buffer are never updated')
     add('--rehearsal', type=int, default=1,
             help='whether to rehearse on previous data samples from the buffer')
     add('--mem_size', type=int, default=600,
@@ -147,201 +68,20 @@ def get_global_args(arglist):
             help='number of classes in dataset')
     add('--n_runs', type=int, default=1,
             help='number of runs for a specific configuration')
-    add('--print_logs', type=int, default=1,
-            help='whether to print the logs during training')
-    add('--sunk_cost', action='store_true',
-            help='if true, we do not substract model weights in param. cost')
-
-    # ablation
-    add('--no_idx_update', action='store_true',
-            help='if True, the indices in the buffer are only updated if the ' +
-            'compression level changes for said specific example')
 
     # classifier args
-    add('--cls_lr', type=float, default=0.1,
+    add('--cls_lr', type=float, default=0.05,
             help='learning rate for the classifier')
     add('--cls_n_iters', type=int, default=1,
             help='number of iterations on the incoming data for the classifier')
-    add('--test_on_recon', action='store_true',
-            help='whether to autoencoder the input at test time')
 
-    add('--delayed_delete', type=int, default=0)
-    add('--suffix', type=str, default='')
-    add('--mask_unfrozen', type=int, default=1,
-            help='if true, only add sample to blocks with frozen embeddings')
-    add('--freeze_embeddings', type=int, default=1,
-            help='if true, freeze embeddings when block is good enough')
-    add('--use_ema', type=int, default=1,
-            help='keep EMA of decoder from which samples are drawn')
+    add('--config', type=str, default='config/cifar_20.yaml')
+    add('--gen_weights', type=str, default=None)
 
-    add('--modular_input', type=str, default='z_q',
-            choices=['z_q', 'z_e'])
+    add('--mode', type=str, default='offline', choices=['online', 'offline'])
 
-    add('--always_compress', type=int, default=0,
-            help='only set to true if you\'re ok with underuse of memory')
-
-    args = parser.parse_args(arglist)
-
-    return args
+    return parser.parse_args()
 
 
 def get_args():
-    # Assumption 1: specific block parameters are separated by three dashes
-    # Assumption 2: specific block parameters are specified AFTER regular args
-    # See README.MD for example
-
-    layer_flags = [i for i in range(len(sys.argv)) \
-            if sys.argv[i].startswith('---layer')]
-
-    global_args = sys.argv[1:len(sys.argv) \
-            if len(layer_flags) == 0 else min(layer_flags)]
-    global_args = get_global_args(global_args)
-
-    global_args.layers = {}
-
-    n_args, n_layers = len(sys.argv), len(layer_flags)
-
-    # now we add layer specific params
-    for i in range(len(layer_flags)):
-        layer_idx   = layer_flags[i]
-        end_idx     = n_args if (i+1) == n_layers else layer_flags[i+1]
-        layer_no    = int(sys.argv[layer_idx].split('---layer_')[-1])
-        layer_args  = get_default_layer_args(sys.argv[layer_idx + 1:end_idx])
-
-        ''' (for now) copy the remaining args manually '''
-        layer_args.optimization  = global_args.optimization
-        layer_args.rehearsal     = global_args.rehearsal
-        layer_args.mem_size      = global_args.mem_size
-        layer_args.n_classes     = global_args.n_classes
-        layer_args.data_size     = global_args.data_size
-        layer_args.use_ema       = global_args.use_ema
-        layer_args.dataset       = global_args.dataset
-
-        layer_args.freeze_embeddings = global_args.freeze_embeddings
-
-        # make sure layer does not exist yet
-        assert layer_no not in global_args.layers.keys()
-        global_args.layers[layer_no] = layer_args
-
-        if layer_args.model in ['gumbel', 'argmax']:
-            print('overwriting the embedding dimension to == the number' +
-                  'of embeddings')
-            layer_args.embed_dim = layer_args.num_embeddings
-
-    if len(global_args.recon_th) == 1:
-        global_args.recon_th *= global_args.num_blocks
-
-    # for now let's specify every layer via the command line
-    assert n_layers == global_args.num_blocks    or global_args.gen_weights
-    assert n_layers == len(global_args.recon_th) or global_args.gen_weights
-
-    assert global_args.cls_n_iters <= global_args.n_iters, \
-            'might as well train gen. model more?'
-
-    # we want to know what the compression factor is at every level
-    current_shape = global_args.data_size[1:] # e.g. (128, 128)
-
-    fill = lambda x : (str(x) + (20 - len(str(x))) * ' ')[:20]
-    print(fill('INPUT SHAPE'),
-          fill('LATENT SHAPE'),
-          fill('COMP RATE'),
-               'ARGMIN SHAPE')
-
-    # specify remaining args
-    for i in range(global_args.num_blocks):
-
-        input_channels = global_args.data_size[0] if i == 0 else \
-                         global_args.layers[i - 1].embed_dim
-        global_args.layers[i].in_channel  = input_channels
-        global_args.layers[i].out_channel = input_channels
-
-
-        ''' stride '''
-        if global_args.layers[i].downsample == 1:
-            stride = global_args.layers[i].stride = [1,1]
-        else:
-            stride = global_args.layers[i].stride = [2,2]
-
-        ''' compression rate '''
-        comp_map = {1:1, 2:1, 4:2}
-        per_dim_ds = comp_map[global_args.layers[i].downsample]
-
-        input_shape   = current_shape
-        current_shape = (current_shape[0] // (stride[0] ** per_dim_ds),
-                         current_shape[1] // (stride[1] ** per_dim_ds))
-
-        # parse the quantization sizes:
-        total_idx = 0.
-        argmin_shapes = []
-
-        for cb_idx in range(global_args.layers[i].num_codebooks):
-            qs  = (1,1)
-
-            # count the amount of indices for a specific block
-            total_idx += np.prod(current_shape) / np.prod(qs)
-
-            argmin_shape = (current_shape[0] // qs[0], current_shape[1] // qs[1])
-
-            if global_args.layers[i].model == 'continuous':
-                argmin_shape = (global_args.layers[i].embed_dim,) + argmin_shape
-            argmin_shapes += [argmin_shape]
-
-        comp_rate  = np.prod(global_args.data_size) / float(total_idx)
-
-        if global_args.layers[i].model == 'continuous':
-            # for the contiuous model the number of embeddings is useless
-            # actually we have to set it to 256 so that compression calcul.
-            # done in buffer.py works
-            global_args.layers[i].num_embeddings = 256
-            comp_rate /= global_args.layers[i].embed_dim
-        else:
-            comp_rate *= np.log2(256)/np.log2(global_args.layers[i].num_embeddings)
-
-        global_args.layers[i].comp_rate     = comp_rate
-        global_args.layers[i].argmin_shapes = argmin_shapes
-
-        len_stride = len(global_args.layers[i].stride)
-        assert len_stride <= 2
-        if len_stride == 1:
-            global_args.layers[i].stride = global_args.layers[i].stride *  2
-
-        print(fill(input_shape),
-              fill(current_shape),
-              fill(global_args.layers[i].comp_rate),
-              argmin_shapes)
-
-        # the rest is simply renaming
-        global_args.layers[i].channel = global_args.layers[i].num_hiddens
-
-        if global_args.buffer_batch_size < 0:
-            print('setting buffer batch size == batch_size')
-            global_args.buffer_batch_size = global_args.batch_size
-
-
-    args = global_args
-    if args.gen_weights:
-        model_id = args.gen_weights.split('_')[-1]
-        args.model_name = 'loaded_model_{}'.format(model_id)
-    else:
-        coefs = args.layers[0].decay + args.layers[0].commitment_cost
-        all_comp_rates = ''.join(['{:.2f}^'.format(args.layers[i].comp_rate) \
-                            for i in range(args.num_blocks)])
-
-        args.model_name = 'DS{}_NB{}_RTH{}_Comp{}_NI{}_{}'.format(
-                                args.dataset[-10:],
-                                args.num_blocks,
-                                args.recon_th,
-                                all_comp_rates,
-                                args.n_iters,
-                                np.random.randint(10000))
-        args.model_name = 'test' if args.debug else args.model_name
-
-    return args
-
-
-def get_debug_args():
-    sys.argv[1:] = ['--num_blocks', '2', '---layer_0', '--num_embeddings',     \
-                    '100', '--embed_dim', '44', '---layer_1', '--model',       \
-                    'argmax', '--num_codebooks', '2', '--quant_size', '2', '1',\
-                    '--num_embeddings', '100', '--embed_dim', '44']
-    return get_args()
+    return get_global_args()

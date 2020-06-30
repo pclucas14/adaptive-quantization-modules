@@ -1,0 +1,47 @@
+data_args:
+    dataset    : 'processed_kitti'
+    data_shp: [2, 40, 512]
+    n_classes: 1
+
+block_args:
+    0:
+        in_channel: 2
+        channel: 256
+        argmin_shp: [10, 128]
+        downsample: 4
+        n_embeds: 512
+        n_codebooks: 4
+        n_res_blocks: 2
+        lr: 0.0005
+        decay: .6
+    1:
+        in_channel: 256
+        channel: 256
+        argmin_shp: [10, 128]
+        downsample: 1
+        n_embeds: 1024
+        n_codebooks: 2
+        lr: 0.001
+        decay: .6
+    2:
+        in_channel: 256
+        channel: 256
+        argmin_shp: [10, 128]
+        downsample: 1
+        n_embeds: 1024
+        n_codebooks: 1
+        lr: 0.001
+        decay: .6
+
+opt_args:
+    recon_loss: 'l1'
+    opt: 'greedy'
+    commit_coef: 2
+    input: 'z_q'
+    global_lr: 0.
+mem_args:
+    recon_th: -1
+    mem_size: 5000
+
+
+gen_weights: '/checkpoint/lucaspc/aqm/_3B_zq_grnew_878/gen_49.pth'
