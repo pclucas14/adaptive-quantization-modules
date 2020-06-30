@@ -1,3 +1,4 @@
+import pdb
 import math
 import utils
 import torch
@@ -30,46 +31,35 @@ class ResBlock(nn.Module):
 class Encoder(nn.Module):
     """ Generator Encoder Block. Arguments described in `args.py` """
 
-    def __init__(self, args):
+    def __init__(self, in_channel, channel, downsample, n_res_blocks=1):
+
         super().__init__()
 
-        in_channel           = args.in_channel
-        channel              = args.channel
-        downsample           = args.downsample
-        num_residual_layers  = args.num_residual_layers
-        num_residual_hiddens = args.num_residual_hiddens
+        # assumptions
+        ks = 4
+        embed_dim = channel
+        num_residual_hiddens = channel
 
-        if args.stride[0] != args.stride[1]:
-            # for lidar only
-            assert args.stride[0] < args.stride[1]
-            ks = (3, 4)
-        else:
-            ks = 4
+        assert downsample in (2, 4)
 
         if downsample == 4:
             blocks = [
-                nn.Conv2d(in_channel, channel, ks, args.stride, padding=1),
+                nn.Conv2d(in_channel, channel, ks, 2, padding=1),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(channel, channel, ks, args.stride, padding=1),
-                # nn.ReLU(inplace=True),
-                # nn.Conv2d(channel, channel, 3, padding=1),
+                nn.Conv2d(channel, channel, ks, 2, padding=1),
             ]
 
         elif downsample == 2:
             blocks = [
-                nn.Conv2d(in_channel, channel // 2, ks, args.stride, padding=1),
+                nn.Conv2d(in_channel, channel // 2, ks, 2, padding=1),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(channel // 2, channel, 3, padding=1),
             ]
 
-        for i in range(num_residual_layers):
+        for i in range(n_res_blocks):
             blocks += [ResBlock(channel, num_residual_hiddens)]
 
         blocks += [nn.ReLU(inplace=True)]
-
-        # equivalent of `quantize_conv`
-        if args.embed_dim != channel:
-            blocks += [nn.Conv2d(channel, args.embed_dim, 1)]
 
         self.blocks = nn.Sequential(*blocks)
 
@@ -80,44 +70,33 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     """ Generator Decoder Block. Arguments described in `args.py` """
 
-    def __init__(self, args):
+    def __init__(self, channel, out_channel, upsample, n_res_blocks=1):
         super().__init__()
 
-        in_channel           = args.embed_dim
-        out_channel          = args.in_channel
-        channel              = args.num_hiddens
-        num_residual_hiddens = args.num_residual_hiddens
-        num_residual_layers  = args.num_residual_layers
-        downsample           = args.downsample
+        # assumptions
+        ks = 4
+        in_channel = channel
+        num_residual_hiddens = channel
 
-        if args.stride[0] != args.stride[1]:
-            # for lidar only
-            assert args.stride[0] < args.stride[1]
-            ks = (3, 4)
-        else:
-            ks = 4
+        assert upsample in (2, 4)
 
         blocks = []
 
-        # equivalent of `quantize_conv`
-        if in_channel != channel:
-            blocks += [nn.Conv2d(args.embed_dim, channel, 1)]
-
-        for i in range(num_residual_layers):
+        for i in range(n_res_blocks):
             blocks += [ResBlock(channel, num_residual_hiddens)]
 
         blocks += [nn.ReLU(inplace=True)]
 
-        if downsample == 4:
+        if upsample == 4:
             blocks += [
-                nn.ConvTranspose2d(channel, channel, ks, args.stride, 1),
+                nn.ConvTranspose2d(channel, channel, ks, 2, 1),
                 nn.ReLU(inplace=True),
-                nn.ConvTranspose2d(channel, out_channel, ks, args.stride, 1),
+                nn.ConvTranspose2d(channel, out_channel, ks, 2, 1),
             ]
 
-        elif downsample == 2:
+        elif upsample == 2:
             blocks += [
-                nn.ConvTranspose2d(channel, out_channel, ks, args.stride, 1)
+                nn.ConvTranspose2d(channel, out_channel, ks, 2, 1)
             ]
 
         self.blocks = nn.Sequential(*blocks)
@@ -186,8 +165,8 @@ class ResNet(nn.Module):
             last_hid = 2560
 
         # 84 x 84 mini-imagenet
-        elif input_size[-1] == 64:
-            last_hid = 640
+        elif input_size[-1] == 84:
+            last_hid = 320
 
         self.linear = nn.Linear(last_hid, num_classes)
 
@@ -217,3 +196,5 @@ class ResNet(nn.Module):
 
 def ResNet18(nclasses, nf=20, input_size=(3, 32, 32)):
     return ResNet(BasicBlock, [2, 2, 2, 2], nclasses, nf, input_size)
+
+

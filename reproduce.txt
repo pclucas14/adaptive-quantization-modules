@@ -1,0 +1,60 @@
+### CIFAR Experiments ###
+------------------------------------
+
+M = 20
+
+    python cls_main.py --config config/cifar/cifar_20_final.yaml --n_runs 20 --data_size 3 32 32  --dataset split_cifar10 --n_classes 10
+
+
+M = 50
+
+    python cls_main.py --config config/cifar/cifar_50_final.yaml --n_runs 20 --data_size 3 32 32  --dataset split_cifar10 --n_classes 10
+
+
+
+### Lidar Experiments ###
+------------------------------------
+
+# For the offline training phase
+
+    python lidar_main.py --mode offline --config config/lidar/3B_offline.yaml --data_size 2 40 512 --dataset processed_kitti --rehearsal 0 --name repro --num_epochs 50
+
+
+# Load the pretrained model and run online 
+# If you use a different pretrained model, make sure the config file's `gen_weights` is updated to point to said model
+
+    python lidar_main.py --mode online --config config/lidar/3B_online.yaml --data_size 2 40 512 --dataset processed_kitti --rehearsal 0 --name repro --num_epochs 1
+
+
+
+### Other Experiments ###
+------------------------------------
+
+The remainder of the experiments were ran before we did a major refactoring of the code.
+
+
+### Offline Imagnenet Ablation 
+
+For the exact results
+See https://github.com/pclucas14/adaptive-quantization-modules/blob/4c756064548c2d345174408539d45f2ee6a1a3ce/offline_cls/reproduce_im.sh
+
+For the hparam search 
+See https://github.com/pclucas14/adaptive-quantization-modules/blob/4c756064548c2d345174408539d45f2ee6a1a3ce/offline_cls/launch_hpsearch.sh
+
+
+
+### Codebook Freezing Ablation 
+
+See https://github.com/pclucas14/adaptive-quantization-modules/blob/4c756064548c2d345174408539d45f2ee6a1a3ce/offline_cls/reproduce_drift.sh
+
+
+
+### Online Lidar experiment 
+
+See https://github.com/pclucas14/adaptive-quantization-modules/blob/25afbfac3637e7731d707055222211ae31f14819/lidar/reproduce_lidar.sh
+
+
+
+### Atari
+
+See https://github.com/pclucas14/adaptive-quantization-modules/blob/25afbfac3637e7731d707055222211ae31f14819/atari/launch.sh
