@@ -1,6 +1,7 @@
 # Online Learned Continual Compression with Adaptive Quantization Modules (ICML 2020)
 Stacking Quantization blocks for efficient lifelong online compression </br>
-Code for reproducing all results in our paper  which can be found [here](https://arxiv.org/abs/1911.08019)
+Code for reproducing all results in our paper  which can be found [here](https://arxiv.org/abs/1911.08019) </br>
+You can find a quick demo on Google Colab [here](https://colab.research.google.com/drive/1bR5y0ko5QRPc6-_g8X5ok0XiiFcZVJtH?usp=sharing)
 
 
 ## (key) Requirements 
