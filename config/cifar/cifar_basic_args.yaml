@@ -1,0 +1,18 @@
+dataset: 'split_cifar10'
+data_size: [3, 32, 32]
+n_classes: 10
+
+batch_size: 10
+device: 'cuda'
+debug: False
+
+n_runs: 20
+cls_lr: 0.05
+
+num_epochs: 1
+samples_per_task: -1
+n_iters: 1
+cls_n_iters: 1
+
+rehearsal: 1
+buffer_batch_size: 10
