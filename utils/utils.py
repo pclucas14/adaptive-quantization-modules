@@ -33,7 +33,6 @@ def to_polar(velo):
 
     # assumes r x n/r x (3,4) velo
     dist = torch.sqrt(velo[:, :, 0] ** 2 + velo[:, :, 1] ** 2)
-    # theta = np.arctan2(velo[:, 1], velo[:, 0])
     out = torch.stack([dist, velo[:, :, 2]], dim=2)
 
     if switch:
@@ -92,7 +91,7 @@ class RALog():
     def avg_dict(self, prefix=''):
         out = {}
         for key in self.storage.keys():
-            avg = self.storage[key]# / self.count[key]
+            avg = self.storage[key]
             out[prefix + key] = avg
 
         return out
@@ -169,6 +168,9 @@ def load_model(model, path):
     # load weights
     params = torch.load(path)
 
+    named_params = {x:y for (x,y) in model.named_parameters()}
+    named_params.update({x:y for (x,y) in model.named_buffers()})
+
     for name, param in params.items():
         if 'buffer' in name.lower():
             if 'dummy' in name.lower():
@@ -178,5 +180,26 @@ def load_model(model, path):
                 block_id  = int(parts[1])
                 model.blocks[block_id].buffer.expand(param.size(0))
 
+        if 'quantize' in name:
+            # potentially reduce
+            n_embeds = param.shape[1]
+            if n_embeds != named_params[name].shape[1]:
+                block_id = int(name.split('.')[1])
+                model.blocks[block_id].quantize.trim(n_embeds=n_embeds)
+
+    if sum('ema_decoder' in x for x in named_params) > 0:
+        for block in model.blocks:
+            block.ema_decoder = deepcopy(block.decoder)
+
     model.load_state_dict(params)
     print('successfully loaded model')
+
+
+# Misc
+# ---------------------------------------------------------------------------------
+
+def set_seed(seed):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
