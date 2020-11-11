@@ -49,9 +49,9 @@ If you find this code useful please cite us in your work.
 
 ```
 @article{caccia2019online,
-  title={Online learned continual compression with stacked quantization module},
+  title={Online Learned Continual Compression with Adaptive Quantization Modules},
   author={Caccia, Lucas and Belilovsky, Eugene and Caccia, Massimo and Pineau, Joelle},
-  journal={arXiv preprint arXiv:1911.08019},
-  year={2019}
+  journal={Proceedings of the 37th International Conference on Machine Learning},
+  year={2020}
 }
 ```
